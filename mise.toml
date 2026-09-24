@@ -53,6 +53,16 @@ description = "Run the Harbor-dependent tests against real Harbor. NOT part of `
 # environment or its import path changes, and whenever `harbor` is upgraded (when the port drifts).
 run = "uv run --group eval pytest tests/integration/test_harbor_loader_contract.py tests/integration/test_environment_packaging.py tests/integration/test_lambda_microvms.py"
 
+[tasks.test-e2e]
+description = "Run the black-box end-to-end CLI suite (network-backed). NOT part of `check`."
+# Deliberately outside `check`: it drives the real `eval-harvest` console script against a live public
+# GitHub repo (a `git clone` plus `gh` calls) and takes minutes; forge-dependent tests skip with a
+# reason when github.com is unreachable, so it never fails offline. `-n0` overrides the suite-wide
+# `-n auto` (see pyproject `addopts`): the expensive session fixtures (clone, capture) must run once,
+# not once per xdist worker. Run it whenever the CLI's observable contract changes — exit codes,
+# stdout/stderr shape, the four-field refusal, or the files each verb writes.
+run = "uv run pytest tests/e2e -n0"
+
 [tasks.eval-preflight]
 description = "Check the Lambda MicroVMs environment's imports resolve, by name, before any AWS call."
 # The same preflight `eval.run` runs before dispatch, exposed standalone: there is no CI to hang it
