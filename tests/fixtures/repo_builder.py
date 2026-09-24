@@ -17,6 +17,8 @@ in, which is the ``--from-json`` replay path the tests use instead of hitting Gi
 The builder isolates git from the developer's global/system config (``GIT_CONFIG_GLOBAL`` and
 ``GIT_CONFIG_SYSTEM`` point at the null device) so a stray ``include.path`` or commit-signing
 setting in ``~/.gitconfig`` cannot make a "clean" fixture fail the very channels seal checks for.
+It also pins ``TZ`` (see ``_ISOLATED_ENV``): a commit's date is serialized with the host's timezone
+offset, so an unpinned zone makes the commit SHAs — and every SHA-pinned golden — vary by machine.
 """
 
 from __future__ import annotations
@@ -63,6 +65,10 @@ class PullRequestFixture:
 
 #: Environment that pins git to a fixed identity and no ambient config, so a fixture repo is a
 #: function of the builder calls alone — not of whatever the host's ~/.gitconfig happens to set.
+#: ``TZ`` is pinned too: a commit object stores its date as ``<unix-ts> <tz-offset>``, so without a
+#: fixed zone the commit SHAs — and every SHA derived from them — would vary by host timezone. This
+#: env fully replaces the environment, so ``TZ`` must be set here (an inherited ``TZ`` is dropped)
+#: or git falls back to reading the host's ``/etc/localtime``.
 _ISOLATED_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_SYSTEM": os.devnull,
@@ -72,6 +78,7 @@ _ISOLATED_ENV = {
     "GIT_COMMITTER_EMAIL": "eval@harvest.test",
     "GIT_TERMINAL_PROMPT": "0",
     "HOME": os.devnull,
+    "TZ": "UTC",
 }
 
 

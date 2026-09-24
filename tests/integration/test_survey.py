@@ -2,11 +2,12 @@
 
 ``survey.py`` is a self-contained build, so its output is pinned against a committed golden payload
 rather than compared to any external tool. The golden is byte-stable because the fixture's commit
-SHAs are deterministic: :class:`RepoBuilder` pins the author/committer identity *and* the
-author/committer dates, so a squash-merged, branch-deleted PR built from the same builder calls
-hashes to the same SHAs on every run and every machine. That is what lets a raw-bytes golden-file
-test (NFR-1) stand in for the old independent-tool comparison and still catch a reordered key, a
-changed range, or a lost field.
+SHAs are deterministic: :class:`RepoBuilder` pins the author/committer identity, the
+author/committer dates, *and* the timezone (``TZ=UTC``, since a commit date is stored with its zone
+offset), so a squash-merged, branch-deleted PR built from the same builder calls hashes to the same
+SHAs on every run and every machine. That is what lets a raw-bytes golden-file test (NFR-1) stand in
+for the old independent-tool comparison and still catch a reordered key, a changed range, or a lost
+field.
 
 The recovery behaviour the survey reads *is* git's behaviour, so the clone is a real squash-merged,
 branch-deleted PR built by :class:`RepoBuilder` (a mock would only test the mock). The ``gh pr
@@ -71,7 +72,7 @@ def test_survey_matches_golden(tmp_path: Path, capsys: pytest.CaptureFixture[str
 
     The regression check (S-13, FR-5): the payload is pinned to a frozen expected output, so this is
     what catches the triage logic drifting — a reordered key, a different range, a lost field. It
-    holds byte-for-byte because the fixture SHAs are deterministic (fixed identity + dates).
+    holds byte-for-byte because the fixture SHAs are deterministic (fixed identity, dates, and TZ).
     """
     fixture = RepoBuilder.build_squash_merged_pull_request(tmp_path)
     payload = _write_payload("reviewed.json", fixture.clone, fixture, tmp_path)
