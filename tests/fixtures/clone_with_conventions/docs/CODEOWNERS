@@ -1,0 +1,2 @@
+# A second CODEOWNERS location GitHub recognises (docs/), to exercise the docs/ scan path.
+docs/  @our-org/docs

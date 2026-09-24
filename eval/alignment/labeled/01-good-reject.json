@@ -1,0 +1,34 @@
+{
+  "id": "01-good-reject",
+  "human_overall_pass": true,
+  "human_note": "Clean reject: oracle matches the reviewer's real change-request, built from the pre-fix state, verdict blocks, instruction neutral, no nit promoted.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13611-reject",
+    "kind": "reject",
+    "expected_verdict": "block",
+    "blocking_severity": "high",
+    "instruction": "Review the change on this pull-request iteration and report the defects a competent reviewer should catch.",
+    "change_patch": "--- a/pydantic/types.py\n+++ b/pydantic/types.py\n@@\n-    if isinstance(pattern, str):\n-        return pattern\n+    return pattern\n",
+    "oracle_findings": [
+      {"statement": "A re.Pattern is passed where a str pattern is expected; compiled patterns are not handled.", "severity": "high", "reference_only": false, "blocking": true}
+    ],
+    "change_risk_structural": "medium",
+    "change_risk_classified": "medium"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13611,
+    "reviewed_state": "the change-requested (round 1) state before the fix was pushed",
+    "review_summary": "Reviewer Viicos requested changes: a re.Pattern value reaches code expecting a str, so compiled patterns break. The author then pushed a fix and it was approved."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": true, "score": 0.95, "rationale": "The single high finding is exactly the re.Pattern/str defect the reviewer raised."},
+      {"name": "change-matches-reviewed-state", "passed": true, "score": 0.9, "rationale": "The diff is the pre-fix round-1 state the reject kind names."},
+      {"name": "verdict-fits-kind", "passed": true, "score": 1.0, "rationale": "reject expects block and there is a substantive high finding."},
+      {"name": "instruction-outcome-neutral", "passed": true, "score": 1.0, "rationale": "Instruction names no verdict, kind, or PR number."},
+      {"name": "nits-not-promoted", "passed": true, "score": 1.0, "rationale": "The only finding is a genuine defect, not a style nit."}
+    ],
+    "notes": "A faithful reject datapoint."
+  }
+}

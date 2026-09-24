@@ -3,7 +3,7 @@ id: B-4
 title: "[Forge] Extract diffspan.py + bind each comment to the iterations whose diff covers it"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: M
 implements: [FR-9, FR-12, FR-34, FR-2, FR-6]
 user_story: US-2

@@ -3,7 +3,7 @@ id: G-3
 title: "[Eval] Tool-use + trajectory metrics, eval report, and the §8 pass bar"
 feature: pr-eval-harvest
 workstream: Eval
-status: todo
+status: done
 complexity: L
 implements: []
 user_story: US-1

@@ -1,0 +1,34 @@
+{
+  "id": "07-bad-wrong-state",
+  "human_overall_pass": false,
+  "human_note": "A reject datapoint built from the POST-fix state: the change already contains the fix, so the oracle defect is not present in the change under review.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13611-reject",
+    "kind": "reject",
+    "expected_verdict": "block",
+    "blocking_severity": "high",
+    "instruction": "Review the change on this pull-request iteration and report the defects a competent reviewer should catch.",
+    "change_patch": "--- a/pydantic/types.py\n+++ b/pydantic/types.py\n@@\n-    return pattern\n+    if isinstance(pattern, re.Pattern):\n+        return pattern.pattern\n+    return pattern\n",
+    "oracle_findings": [
+      {"statement": "A re.Pattern is passed where a str pattern is expected; compiled patterns are not handled.", "severity": "high", "reference_only": false, "blocking": true}
+    ],
+    "change_risk_structural": "medium",
+    "change_risk_classified": "medium"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13611,
+    "reviewed_state": "the change-requested (round 1) state before the fix",
+    "review_summary": "Reviewer requested changes over an unhandled re.Pattern; the fix (handling re.Pattern) was pushed in round 2 and approved."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": true, "score": 0.8, "rationale": "The finding statement matches the reviewer's comment."},
+      {"name": "change-matches-reviewed-state", "passed": false, "score": 0.0, "rationale": "The diff already handles re.Pattern — it is the post-fix state, not the change-requested state a reject should capture. The oracle defect is not present in the change under review."},
+      {"name": "verdict-fits-kind", "passed": true, "score": 0.6, "rationale": "The verdict is block, but the change no longer contains the defect."},
+      {"name": "instruction-outcome-neutral", "passed": true, "score": 1.0, "rationale": "Instruction leaks nothing."},
+      {"name": "nits-not-promoted", "passed": true, "score": 1.0, "rationale": "Not a nit issue."}
+    ],
+    "notes": "The reject was built from the fixed state, inverting what the datapoint claims to test."
+  }
+}

@@ -3,7 +3,7 @@ id: B-5
 title: "[Forge] Add the `show` verb: print the diff hunk around one comment"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: M
 implements: [FR-1, FR-4, FR-9, FR-12]
 user_story: US-3

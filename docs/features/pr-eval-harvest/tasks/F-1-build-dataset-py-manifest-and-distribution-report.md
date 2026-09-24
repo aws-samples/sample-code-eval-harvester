@@ -6,7 +6,7 @@ workstream: Dataset & docs
 complexity: M
 implements: [FR-23, FR-29]
 user_story: US-4
-status: todo
+status: done
 blocked_by: [D-2, D-3]
 blocks: []
 ---

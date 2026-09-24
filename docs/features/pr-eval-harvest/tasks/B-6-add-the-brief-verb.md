@@ -3,7 +3,7 @@ id: B-6
 title: "[Forge] Add the `brief` verb: one self-contained per-PR brief"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: M
 implements: [FR-1, FR-4, FR-9]
 user_story: US-3

@@ -3,7 +3,7 @@ id: E-2
 title: "[Verify] Build verify.py: structural checks + absence scan + control token"
 feature: pr-eval-harvest
 workstream: Verification
-status: todo
+status: done
 complexity: L
 implements: [FR-34, FR-35, FR-36, FR-39, FR-2, FR-15, NFR-6]
 user_story: US-7

@@ -1,0 +1,13 @@
+# A fixture workflow — nested under tests/fixtures, never run by this repo's CI.
+name: ci
+on: [push]
+
+# Least privilege, matching the real workflow — this fixture is scanned like any other file.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "fixture only"

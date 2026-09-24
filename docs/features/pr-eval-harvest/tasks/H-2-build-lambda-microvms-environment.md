@@ -3,7 +3,7 @@ id: H-2
 title: "[Env] Build the LambdaMicrovmsEnvironment on microvms-agentd"
 feature: pr-eval-harvest
 workstream: Lambda MicroVMs execution environment
-status: todo
+status: done
 complexity: L
 implements: []
 user_story: US-6

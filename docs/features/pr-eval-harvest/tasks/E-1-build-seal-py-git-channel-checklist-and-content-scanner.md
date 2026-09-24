@@ -6,7 +6,7 @@ workstream: Verification
 complexity: L
 implements: [TP-5, FR-35, FR-36, FR-40, NFR-6]
 user_story: US-7
-status: todo
+status: done
 blocked_by: [A-1]
 blocks: [E-2]
 ---

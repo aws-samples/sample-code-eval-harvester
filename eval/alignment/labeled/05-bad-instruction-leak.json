@@ -1,0 +1,34 @@
+{
+  "id": "05-bad-instruction-leak",
+  "human_overall_pass": false,
+  "human_note": "The instruction names the verdict and the PR number, so the answer is inferable from the phrasing rather than the code.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13611-reject",
+    "kind": "reject",
+    "expected_verdict": "block",
+    "blocking_severity": "high",
+    "instruction": "This change from PR #13611 was rejected by the reviewer. Review it and confirm why it should be blocked.",
+    "change_patch": "--- a/pydantic/types.py\n+++ b/pydantic/types.py\n@@\n-    if isinstance(pattern, str):\n-        return pattern\n+    return pattern\n",
+    "oracle_findings": [
+      {"statement": "A re.Pattern is passed where a str pattern is expected; compiled patterns are not handled.", "severity": "high", "reference_only": false, "blocking": true}
+    ],
+    "change_risk_structural": "medium",
+    "change_risk_classified": "medium"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13611,
+    "reviewed_state": "the change-requested state",
+    "review_summary": "Reviewer requested changes over an unhandled re.Pattern; later fixed and approved."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": true, "score": 0.9, "rationale": "The finding matches the real review."},
+      {"name": "change-matches-reviewed-state", "passed": true, "score": 0.9, "rationale": "The diff is the reviewed state."},
+      {"name": "verdict-fits-kind", "passed": true, "score": 1.0, "rationale": "reject expects block; a substantive finding is present."},
+      {"name": "instruction-outcome-neutral", "passed": false, "score": 0.0, "rationale": "The instruction says the change 'was rejected', names PR #13611, and asks to confirm it 'should be blocked' — the verdict is readable from the wording."},
+      {"name": "nits-not-promoted", "passed": true, "score": 1.0, "rationale": "The finding is a genuine defect."}
+    ],
+    "notes": "The instruction leaks the expected outcome; a review agent could pass without reading the code."
+  }
+}

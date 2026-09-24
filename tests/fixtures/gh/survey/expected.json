@@ -1,0 +1,65 @@
+{
+  "repo": "",
+  "mainline_commits": 2,
+  "prs": [
+    {
+      "number": 1234,
+      "title": "fix: correct operator and loop bound",
+      "url": "https://github.com/acme/widgets/pull/1234",
+      "state": "MERGED",
+      "author": "author-bob",
+      "created_at": "2026-08-01T09:00:00Z",
+      "merged_at": "2026-08-03T09:00:00Z",
+      "closed_at": "2026-08-03T09:00:00Z",
+      "integration_revision": "1760226732261badd658b3f1636d1e1f1712aba0",
+      "integration_parents": 1,
+      "integration_is_true_merge": false,
+      "change_tip": "9522074039f97d352c97f1789c501733ac9fa823",
+      "change_tip_ref": "pr/1234",
+      "change_base": "db564a3f127e7496081324a7af0222de012daa79",
+      "recorded_base": "db564a3f127e7496081324a7af0222de012daa79",
+      "tip_is_ancestor_of_integration": false,
+      "branch_commits": 2,
+      "changed_paths": [
+        "code.py"
+      ],
+      "n_changed": 1,
+      "branch_changed_paths": [
+        "code.py"
+      ],
+      "forge_changed_files": 1,
+      "path_count_disagrees": false,
+      "additions": 6,
+      "deletions": 1,
+      "test_paths": [],
+      "has_test_change": false,
+      "path_roots": [
+        "code.py"
+      ],
+      "branch": "fix/42-scan-bounds",
+      "issue_candidates": [
+        "42"
+      ],
+      "labels": [
+        "bug",
+        "reviewed"
+      ],
+      "review_rounds": 2,
+      "reviewers": [
+        "reviewer-alice"
+      ],
+      "reverted_by": [],
+      "followup_fixes": [],
+      "closed_unmerged": false,
+      "blockers": [
+        "no-test-change"
+      ]
+    }
+  ],
+  "blockers": {
+    "no-test-change": {
+      "count": 1,
+      "remedy": "the change touched no test files; harvestable for review, but not for a hidden-test task"
+    }
+  }
+}

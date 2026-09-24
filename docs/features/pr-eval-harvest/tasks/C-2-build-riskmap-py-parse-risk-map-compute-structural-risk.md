@@ -3,7 +3,7 @@ id: C-2
 title: "[Artefacts] Build riskmap.py: parse risk-map.toml, compute structural risk"
 feature: pr-eval-harvest
 workstream: Artefacts (rubric & risk map)
-status: todo
+status: done
 complexity: S
 implements: [FR-20, FR-22]
 user_story: US-4

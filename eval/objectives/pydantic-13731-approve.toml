@@ -1,0 +1,13 @@
+# Approve objective: pydantic/pydantic PR #13731 was reviewed and approved with no changes
+# requested. The approve datapoint is built from the approved state, so its expected verdict is
+# `approve` and it should carry no blocking (high-severity) finding.
+id = "pydantic-13731-approve"
+repo_url = "https://github.com/pydantic/pydantic"
+commit_sha = "1b108dedcefa1e4bae1c487d03f33f142f83fc44"
+pr = 13731
+kind = "approve"
+
+[expected_properties]
+expected_verdict = "approve"
+minimum_findings = 0
+must_mention = []

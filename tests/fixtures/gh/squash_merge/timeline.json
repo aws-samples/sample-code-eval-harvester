@@ -1,0 +1,7 @@
+[
+  {"event": "committed", "sha": "{{ROUND1_TIP}}"},
+  {"event": "reviewed", "state": "changes_requested", "submitted_at": "2026-08-01T10:00:00Z"},
+  {"event": "committed", "sha": "{{ROUND2_TIP}}"},
+  {"event": "reviewed", "state": "approved", "submitted_at": "2026-08-02T12:00:00Z"},
+  {"event": "merged", "commit_id": "{{ROUND2_TIP}}", "created_at": "2026-08-03T09:10:00Z"}
+]

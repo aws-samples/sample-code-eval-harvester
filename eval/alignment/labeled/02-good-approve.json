@@ -1,0 +1,34 @@
+{
+  "id": "02-good-approve",
+  "human_overall_pass": true,
+  "human_note": "Clean approve: approved final state, only non-blocking nits carried over, verdict approve, instruction neutral.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13731-approve",
+    "kind": "approve",
+    "expected_verdict": "approve",
+    "blocking_severity": "high",
+    "instruction": "Review the change on this pull-request iteration and report the defects a competent reviewer should catch.",
+    "change_patch": "--- a/pydantic/_internal/_validators.py\n+++ b/pydantic/_internal/_validators.py\n@@\n-    # TODO clean this up\n     return _apply(value)\n",
+    "oracle_findings": [
+      {"statement": "Leftover TODO comment could be tidied; not a defect.", "severity": "low", "reference_only": false, "blocking": false}
+    ],
+    "change_risk_structural": "low",
+    "change_risk_classified": "low"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13731,
+    "reviewed_state": "the approved final state (no changes requested)",
+    "review_summary": "Reviewed and approved with no changes requested; a reviewer left one style nit about a leftover TODO."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": true, "score": 0.9, "rationale": "The lone nit matches the style comment left on the approved PR."},
+      {"name": "change-matches-reviewed-state", "passed": true, "score": 1.0, "rationale": "The diff is the approved final state the approve kind names."},
+      {"name": "verdict-fits-kind", "passed": true, "score": 1.0, "rationale": "approve expects approve and there is no blocking finding."},
+      {"name": "instruction-outcome-neutral", "passed": true, "score": 1.0, "rationale": "Instruction names no verdict, kind, or PR number."},
+      {"name": "nits-not-promoted", "passed": true, "score": 1.0, "rationale": "The style comment is recorded low and non-blocking."}
+    ],
+    "notes": "A faithful approve datapoint."
+  }
+}

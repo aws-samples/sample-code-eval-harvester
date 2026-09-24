@@ -1,0 +1,8 @@
+{
+  "n_labeled": 8,
+  "agreement": 0.875,
+  "bar": 0.8,
+  "passed": true,
+  "judge_version": "quality-judge-v1",
+  "model": "recorded-fixtures"
+}

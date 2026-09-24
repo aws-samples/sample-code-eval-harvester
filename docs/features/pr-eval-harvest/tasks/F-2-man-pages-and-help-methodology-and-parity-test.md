@@ -3,7 +3,7 @@ id: F-2
 title: "[Docs] man/ + --help methodology for every verb + human-parity test"
 feature: pr-eval-harvest
 workstream: Dataset & docs
-status: todo
+status: done
 complexity: M
 implements: [FR-1, FR-4, FR-13, FR-15, FR-16]
 user_story: US-1

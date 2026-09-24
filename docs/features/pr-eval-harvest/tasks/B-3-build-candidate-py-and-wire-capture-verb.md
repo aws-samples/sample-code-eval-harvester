@@ -3,7 +3,7 @@ id: B-3
 title: "[Forge] Build candidate.py + wire the capture verb"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: M
 implements: [FR-9, FR-12, FR-13, FR-15, FR-16, FR-19, FR-20, FR-10]
 user_story: US-2

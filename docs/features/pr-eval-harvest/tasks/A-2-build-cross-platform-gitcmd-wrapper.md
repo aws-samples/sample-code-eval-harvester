@@ -3,7 +3,7 @@ id: A-2
 title: "[Skeleton] Build the cross-platform gitcmd.py subprocess wrapper"
 feature: pr-eval-harvest
 workstream: Project skeleton & dev tooling
-status: todo
+status: done
 complexity: M
 implements: [NFR-4, NFR-2]
 user_story: US-1

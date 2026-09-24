@@ -1,0 +1,13 @@
+# Reject objective: pydantic/pydantic PR #13611 went through a real review iteration —
+# reviewer Viicos requested changes, the author pushed a fix, and it was then approved. The reject
+# datapoint is built from the change-requested state, so its expected verdict is `block`.
+id = "pydantic-13611-reject"
+repo_url = "https://github.com/pydantic/pydantic"
+commit_sha = "1affc1996d2bfa548707d11fef657955bf562aa5"
+pr = 13611
+kind = "reject"
+
+[expected_properties]
+expected_verdict = "block"
+minimum_findings = 1
+must_mention = ["re.Pattern", "pattern"]

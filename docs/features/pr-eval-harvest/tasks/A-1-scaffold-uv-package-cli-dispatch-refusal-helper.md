@@ -3,7 +3,7 @@ id: A-1
 title: "[Skeleton] Scaffold the uv package, CLI dispatch, and refusal/exit-code helper"
 feature: pr-eval-harvest
 workstream: Project skeleton & dev tooling
-status: todo
+status: done
 complexity: S
 implements: [TP-1, NFR-5, FR-2, FR-4]
 user_story: US-1

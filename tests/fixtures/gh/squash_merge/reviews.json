@@ -1,0 +1,18 @@
+[
+  {
+    "id": 5001,
+    "state": "CHANGES_REQUESTED",
+    "commit_id": "{{ROUND1_TIP}}",
+    "submitted_at": "2026-08-01T10:00:00Z",
+    "user": {"login": "reviewer-alice"},
+    "author_association": "MEMBER"
+  },
+  {
+    "id": 5002,
+    "state": "APPROVED",
+    "commit_id": "{{ROUND2_TIP}}",
+    "submitted_at": "2026-08-02T12:00:00Z",
+    "user": {"login": "reviewer-alice"},
+    "author_association": "MEMBER"
+  }
+]

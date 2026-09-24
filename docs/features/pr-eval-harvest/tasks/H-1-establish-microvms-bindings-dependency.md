@@ -3,7 +3,7 @@ id: H-1
 title: "[Env] Establish the microvms bindings dependency and its typed surface"
 feature: pr-eval-harvest
 workstream: Lambda MicroVMs execution environment
-status: todo
+status: done
 complexity: S
 implements: []
 user_story: US-6

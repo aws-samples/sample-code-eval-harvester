@@ -3,7 +3,7 @@ id: B-2
 title: "[Forge] Build forge.py: iterations, inline comments, verdicts, timing"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: L
 implements: [FR-6, FR-7, FR-8, FR-12, FR-10, NFR-7]
 user_story: US-2

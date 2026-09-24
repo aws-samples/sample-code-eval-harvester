@@ -3,7 +3,7 @@ id: A-3
 title: "[Skeleton] CI matrix + dependency-audit/import-scan + static-analysis excludes"
 feature: pr-eval-harvest
 workstream: Project skeleton & dev tooling
-status: todo
+status: done
 complexity: S
 implements: [NFR-3, NFR-4, NFR-5, FR-3]
 user_story: US-1

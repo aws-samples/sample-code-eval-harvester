@@ -3,7 +3,7 @@ id: E-3
 title: "[Verify] Guard-verification suite: break every US-7 invariant, watch it go red"
 feature: pr-eval-harvest
 workstream: Verification
-status: todo
+status: done
 complexity: M
 implements: [FR-37, NFR-6]
 user_story: US-7

@@ -3,7 +3,7 @@ id: D-3
 title: "[Emission] Build emit.py + verifier_tpl/: assemble the task directory"
 feature: pr-eval-harvest
 workstream: Emission
-status: todo
+status: done
 complexity: L
 implements: [FR-14, FR-16, FR-17, FR-18, FR-19, FR-21, FR-27, FR-28, FR-29, FR-30, FR-31, FR-32, FR-33, FR-40, NFR-1, NFR-8]
 user_story: US-6

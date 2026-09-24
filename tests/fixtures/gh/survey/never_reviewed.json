@@ -1,0 +1,23 @@
+[
+  {
+    "number": 1234,
+    "title": "fix: correct operator and loop bound",
+    "body": "Merged straight to main with no review round.",
+    "state": "MERGED",
+    "createdAt": "2026-08-01T09:00:00Z",
+    "closedAt": "2026-08-03T09:00:00Z",
+    "mergedAt": "2026-08-03T09:00:00Z",
+    "mergeCommit": {"oid": "{{MERGE_SHA}}"},
+    "headRefName": "fix/42-scan-bounds",
+    "headRefOid": "{{ROUND2_TIP}}",
+    "baseRefName": "main",
+    "baseRefOid": "{{BASE_SHA}}",
+    "additions": 6,
+    "deletions": 1,
+    "changedFiles": 1,
+    "labels": [],
+    "reviews": [],
+    "url": "https://github.com/acme/widgets/pull/1234",
+    "author": {"login": "author-bob"}
+  }
+]

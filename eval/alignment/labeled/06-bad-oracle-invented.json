@@ -1,0 +1,34 @@
+{
+  "id": "06-bad-oracle-invented",
+  "human_overall_pass": false,
+  "human_note": "The oracle asserts a defect the reviewers never raised — an invented finding the change does not support.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13611-reject",
+    "kind": "reject",
+    "expected_verdict": "block",
+    "blocking_severity": "high",
+    "instruction": "Review the change on this pull-request iteration and report the defects a competent reviewer should catch.",
+    "change_patch": "--- a/pydantic/types.py\n+++ b/pydantic/types.py\n@@\n-    if isinstance(pattern, str):\n-        return pattern\n+    return pattern\n",
+    "oracle_findings": [
+      {"statement": "This change introduces a SQL injection via unsanitized query construction in the ORM layer.", "severity": "high", "reference_only": false, "blocking": true}
+    ],
+    "change_risk_structural": "medium",
+    "change_risk_classified": "medium"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13611,
+    "reviewed_state": "the change-requested state",
+    "review_summary": "Reviewer requested changes over an unhandled re.Pattern in a type helper — nothing about SQL or an ORM."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": false, "score": 0.0, "rationale": "The oracle claims a SQL-injection defect the review never raised and the diff (a type helper) does not contain; it is invented."},
+      {"name": "change-matches-reviewed-state", "passed": true, "score": 0.9, "rationale": "The diff itself is the reviewed state."},
+      {"name": "verdict-fits-kind", "passed": true, "score": 0.7, "rationale": "reject expects block and a high finding is present, though the finding is spurious."},
+      {"name": "instruction-outcome-neutral", "passed": true, "score": 1.0, "rationale": "Instruction leaks nothing."},
+      {"name": "nits-not-promoted", "passed": true, "score": 1.0, "rationale": "Not a nit issue."}
+    ],
+    "notes": "The oracle finding is fabricated and unrelated to the change under review."
+  }
+}

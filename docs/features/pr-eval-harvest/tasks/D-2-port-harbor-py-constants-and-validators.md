@@ -3,7 +3,7 @@ id: D-2
 title: "[Emission] Build harbor.py: constants + task-config/layout validators"
 feature: pr-eval-harvest
 workstream: Emission
-status: todo
+status: done
 complexity: L
 implements: [TP-4, FR-28, FR-32]
 user_story: US-6

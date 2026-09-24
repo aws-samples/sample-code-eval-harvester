@@ -3,7 +3,7 @@ id: I-1
 title: "[Infra] Provision AWS execution infrastructure for the live eval run"
 feature: pr-eval-harvest
 workstream: Infrastructure
-status: todo
+status: done
 complexity: M
 implements: []
 user_story: US-6

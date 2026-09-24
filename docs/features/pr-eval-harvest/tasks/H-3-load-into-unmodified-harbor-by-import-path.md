@@ -3,7 +3,7 @@ id: H-3
 title: "[Env] Load the environment into an unmodified Harbor by import path (no fork)"
 feature: pr-eval-harvest
 workstream: Lambda MicroVMs execution environment
-status: todo
+status: done
 complexity: S
 implements: []
 user_story: US-6

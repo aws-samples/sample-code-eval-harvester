@@ -3,7 +3,7 @@ id: H-4
 title: "[Env] Environment unit-test suite (microvms bindings stubbed)"
 feature: pr-eval-harvest
 workstream: Lambda MicroVMs execution environment
-status: todo
+status: done
 complexity: L
 implements: []
 user_story: US-6

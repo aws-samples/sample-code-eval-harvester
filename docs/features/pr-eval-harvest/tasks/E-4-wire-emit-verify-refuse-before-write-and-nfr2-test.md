@@ -3,7 +3,7 @@ id: E-4
 title: "[Verify] Wire emit→verify refuse-before-write + NFR-2 offline test"
 feature: pr-eval-harvest
 workstream: Verification
-status: todo
+status: done
 complexity: S
 implements: [FR-38, NFR-2]
 user_story: US-7

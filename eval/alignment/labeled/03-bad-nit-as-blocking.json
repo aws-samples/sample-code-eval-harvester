@@ -1,0 +1,34 @@
+{
+  "id": "03-bad-nit-as-blocking",
+  "human_overall_pass": false,
+  "human_note": "A style nit (variable naming) is recorded as a high, blocking finding — teaching the eval that bikeshedding is good review.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13611-reject",
+    "kind": "reject",
+    "expected_verdict": "block",
+    "blocking_severity": "high",
+    "instruction": "Review the change on this pull-request iteration and report the defects a competent reviewer should catch.",
+    "change_patch": "--- a/pydantic/types.py\n+++ b/pydantic/types.py\n@@\n-    tmp = compute(value)\n-    return tmp\n+    result = compute(value)\n+    return result\n",
+    "oracle_findings": [
+      {"statement": "The local variable should be named `result`, not `tmp` — prefer descriptive names.", "severity": "high", "reference_only": false, "blocking": true}
+    ],
+    "change_risk_structural": "low",
+    "change_risk_classified": "low"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13611,
+    "reviewed_state": "the change-requested state",
+    "review_summary": "The only review comment was a naming preference (`tmp` vs `result`) — a style nit, not a defect."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": true, "score": 0.7, "rationale": "The finding does reflect the one comment left, but that comment is a nit."},
+      {"name": "change-matches-reviewed-state", "passed": true, "score": 0.9, "rationale": "The diff is the reviewed state."},
+      {"name": "verdict-fits-kind", "passed": true, "score": 0.6, "rationale": "reject expects block and a high finding is present — though the finding's severity is inflated."},
+      {"name": "instruction-outcome-neutral", "passed": true, "score": 1.0, "rationale": "Instruction leaks nothing."},
+      {"name": "nits-not-promoted", "passed": false, "score": 0.0, "rationale": "A pure naming preference is recorded as high and blocking; this is a nit promoted to a blocker."}
+    ],
+    "notes": "The datapoint teaches the eval that a naming nit should block a merge — the failure PRD §4 warns about."
+  }
+}

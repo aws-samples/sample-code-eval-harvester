@@ -1,0 +1,62 @@
+[
+  {
+    "id": 9001,
+    "body": "`return a - b` subtracts; `add` should add.",
+    "path": "code.py",
+    "line": 2,
+    "original_line": 2,
+    "start_line": null,
+    "original_start_line": null,
+    "commit_id": "{{ROUND2_TIP}}",
+    "original_commit_id": "{{ROUND1_TIP}}",
+    "user": {"login": "reviewer-alice"},
+    "author_association": "MEMBER",
+    "created_at": "2026-08-01T10:00:00Z",
+    "pull_request_review_id": 5001
+  },
+  {
+    "id": 9002,
+    "body": "`range(len(items) + 1)` walks one past the end; iterate the items directly.",
+    "path": "code.py",
+    "line": 7,
+    "original_line": 7,
+    "start_line": 5,
+    "original_start_line": 5,
+    "commit_id": "{{ROUND2_TIP}}",
+    "original_commit_id": "{{ROUND1_TIP}}",
+    "user": {"login": "reviewer-alice"},
+    "author_association": "MEMBER",
+    "created_at": "2026-08-01T10:01:00Z",
+    "pull_request_review_id": 5001
+  },
+  {
+    "id": 9003,
+    "body": "Prefer a comprehension or `sum(items)` here.",
+    "path": "code.py",
+    "line": 6,
+    "original_line": 6,
+    "start_line": null,
+    "original_start_line": null,
+    "commit_id": "{{ROUND2_TIP}}",
+    "original_commit_id": "{{ROUND1_TIP}}",
+    "user": {"login": "reviewer-alice"},
+    "author_association": "MEMBER",
+    "created_at": "2026-08-01T10:02:00Z",
+    "pull_request_review_id": 5001
+  },
+  {
+    "id": 9004,
+    "body": "Nice, this reads cleanly now.",
+    "path": "code.py",
+    "line": 5,
+    "original_line": 5,
+    "start_line": null,
+    "original_start_line": null,
+    "commit_id": "{{ROUND2_TIP}}",
+    "original_commit_id": "{{ROUND2_TIP}}",
+    "user": {"login": "reviewer-alice"},
+    "author_association": "MEMBER",
+    "created_at": "2026-08-02T12:00:00Z",
+    "pull_request_review_id": 5002
+  }
+]

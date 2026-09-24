@@ -3,7 +3,7 @@ id: D-1
 title: "[Emission] Build tomlw.py: deterministic stdlib TOML writer"
 feature: pr-eval-harvest
 workstream: Emission
-status: todo
+status: done
 complexity: M
 implements: [TP-2, NFR-1, NFR-5]
 user_story: US-6

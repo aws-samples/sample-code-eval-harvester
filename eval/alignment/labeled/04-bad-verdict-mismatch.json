@@ -1,0 +1,34 @@
+{
+  "id": "04-bad-verdict-mismatch",
+  "human_overall_pass": false,
+  "human_note": "An approve datapoint that carries a high, blocking finding — 'should this block?' and 'what was wrong?' contradict each other inside one datapoint.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13731-approve",
+    "kind": "approve",
+    "expected_verdict": "approve",
+    "blocking_severity": "high",
+    "instruction": "Review the change on this pull-request iteration and report the defects a competent reviewer should catch.",
+    "change_patch": "--- a/pydantic/_internal/_serializers.py\n+++ b/pydantic/_internal/_serializers.py\n@@\n-    return serialize(value)\n+    return serialize(value, unsafe=True)\n",
+    "oracle_findings": [
+      {"statement": "Passing unsafe=True disables output escaping and allows injection.", "severity": "high", "reference_only": false, "blocking": true}
+    ],
+    "change_risk_structural": "high",
+    "change_risk_classified": "high"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13731,
+    "reviewed_state": "the approved final state",
+    "review_summary": "Reviewed and approved with no changes requested."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": false, "score": 0.2, "rationale": "The approved PR had no such blocking finding in its review."},
+      {"name": "change-matches-reviewed-state", "passed": true, "score": 0.8, "rationale": "The diff is the approved state."},
+      {"name": "verdict-fits-kind", "passed": false, "score": 0.0, "rationale": "An approve datapoint may not carry a high blocking finding; the verdict and the findings contradict each other."},
+      {"name": "instruction-outcome-neutral", "passed": true, "score": 1.0, "rationale": "Instruction leaks nothing."},
+      {"name": "nits-not-promoted", "passed": true, "score": 1.0, "rationale": "No nit involved."}
+    ],
+    "notes": "The verdict says approve but the oracle carries a blocker — incoherent."
+  }
+}

@@ -3,7 +3,7 @@ id: B-1
 title: "[Forge] Build survey.py — mechanical PR triage — with a golden-file test"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: M
 implements: [FR-5, FR-10, FR-11, FR-2, FR-8]
 user_story: US-2

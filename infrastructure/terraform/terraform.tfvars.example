@@ -1,0 +1,13 @@
+aws_region = "us-east-1"
+project    = "eval-harvest"
+
+# Bedrock model IDs the eval is allowed to invoke.
+eval_model_ids = ["us.anthropic.claude-sonnet-4-5-20251001"]
+
+# Required by the sample's documented S1 restrictions: create a dedicated runner
+# role first, in a disposable sample account, and replace SAMPLE_ACCOUNT_ID below.
+# Use another identity for Terraform. The runner role must have no administrative,
+# unrelated, or cross-account grants. This policy does not remove existing grants.
+# An empty list falls back to the Terraform caller; do not use that setup.
+# See README.md in this directory for provisioning, runtime, and cleanup steps.
+eval_caller_principal_arns = ["arn:aws:iam::SAMPLE_ACCOUNT_ID:role/eval-harvest-runner"]

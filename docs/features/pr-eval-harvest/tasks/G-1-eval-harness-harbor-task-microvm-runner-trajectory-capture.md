@@ -3,7 +3,7 @@ id: G-1
 title: "[Eval] Eval harness: Harbor task + MicroVMs runner + trajectory capture"
 feature: pr-eval-harvest
 workstream: Eval
-status: todo
+status: done
 complexity: L
 implements: []
 user_story: US-1

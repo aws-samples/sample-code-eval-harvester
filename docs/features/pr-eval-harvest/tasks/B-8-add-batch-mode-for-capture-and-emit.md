@@ -3,7 +3,7 @@ id: B-8
 title: "[Forge] Batch mode for `capture` and `emit`"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: M
 implements: [FR-2, FR-6, FR-10, FR-11]
 user_story: US-1

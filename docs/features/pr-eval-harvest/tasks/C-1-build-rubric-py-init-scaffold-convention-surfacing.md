@@ -3,7 +3,7 @@ id: C-1
 title: "[Artefacts] Build rubric.py: init scaffold + convention surfacing"
 feature: pr-eval-harvest
 workstream: Artefacts (rubric & risk map)
-status: todo
+status: done
 complexity: M
 implements: [FR-24, FR-25, FR-26, FR-27]
 user_story: US-5

@@ -3,7 +3,7 @@ id: B-7
 title: "[Forge] Add the `annotate` verb: append-only per-comment fill"
 feature: pr-eval-harvest
 workstream: Forge capture
-status: todo
+status: done
 complexity: M
 implements: [FR-1, FR-9, FR-10, FR-13, FR-15]
 user_story: US-3

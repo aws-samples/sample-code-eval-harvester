@@ -1,0 +1,43 @@
+# CI: run the gate on every OS the CLI claims to support (NFR-4). The matrix is the machine
+# that watches "the CLI runs the same on Windows and macOS" — a POSIX-ism in the git wrapper
+# (A-2) or a CRLF in an emitted file surfaces here, on the OS it breaks on, not in review.
+#
+# git and gh both ship preinstalled on all three GitHub-hosted runners, so no install step is
+# needed: the fixture-repo tests shell out to real git (present), and gh-backed tests use the
+# recorded-payload path, so gh auth is never required in CI.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the gate only reads the tree and runs the checks. Nothing here writes to the
+# repository, so the default write-all token is narrowed to a read of the contents.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Third-party actions are pinned to a full commit SHA, not a mutable tag: a tag can be moved
+      # to point at new code, so `@v4` is a promise the upstream owner can rewrite at any time. The
+      # trailing comment records which release each SHA was, since the SHA alone is unreadable.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync
+      - name: Lint
+        run: mise run lint
+      - name: Type check
+        run: mise run typecheck
+      - name: Test
+        run: mise run test

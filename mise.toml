@@ -1,0 +1,142 @@
+# mise tasks for linting and type checking. See CODING_STANDARDS.md for the rules these enforce.
+# Tools are run via `uv` so no global install is required.
+#
+# The ruff and bandit versions are pinned (not `latest`) so the gate is reproducible: `uv tool run X`
+# with no version resolves to whatever is newest, and two upgrades silently turned a green `check`
+# red on machines that had run it before — ruff 0.16.6 tightened E402, and bandit 1.9.x stopped
+# honouring the inline `# nosec B603` on our multi-line `subprocess.run(...)` calls. Bump these
+# deliberately (and re-run `mise run check`) rather than letting `uv` float them under us.
+
+[tools]
+python = "3.12"
+# Security scanners pinned for reproducibility (see the version note at the top of this file). gitleaks
+# and semgrep are managed by mise here; bandit and checkov run via pinned `uv tool run` in their tasks
+# (both are pip tools, matching the ruff/bandit idiom). Unlike the upstream sample we copied the task
+# layout from, these are exact pins, not `latest`.
+gitleaks = "8.24.3"
+semgrep = "1.168.0"
+
+[tasks.lint]
+description = "Lint and format-check with ruff (pinned; see the version note at the top of this file)"
+run = [
+  "uv tool run ruff@0.16.6 check .",
+  "uv tool run ruff@0.16.6 format --check .",
+]
+
+[tasks.format]
+description = "Format with ruff (pinned)"
+run = "uv tool run ruff@0.16.6 format ."
+
+[tasks.lint-fix]
+description = "Auto-fix lint findings and format (pinned)"
+run = [
+  "uv tool run ruff@0.16.6 check --fix .",
+  "uv tool run ruff@0.16.6 format .",
+]
+
+[tasks.typecheck]
+description = "Static type check with mypy (strict)"
+# Run in the project env (not `uv tool run`) so mypy resolves the dev group — pytest's types
+# for the test suite, and the installed eval_harvest package for its imports.
+run = "uv run mypy ."
+
+[tasks.test]
+description = "Run the test suite"
+run = "uv run pytest"
+
+[tasks.test-harbor]
+description = "Run the Harbor-dependent tests against real Harbor. NOT part of `check`."
+# Syncs the `eval` group so `harbor` and the packaged `harvest-env` environment are importable;
+# without it these modules skip, visibly. Deliberately outside `check`: `check` must stay green (and
+# fast) on a machine that has only synced `dev`, so this is the task that has to be run whenever the
+# emitter's layout, task.toml schema, or dataset.toml manifest changes, whenever the packaged
+# environment or its import path changes, and whenever `harbor` is upgraded (when the port drifts).
+run = "uv run --group eval pytest tests/integration/test_harbor_loader_contract.py tests/integration/test_environment_packaging.py tests/integration/test_lambda_microvms.py"
+
+[tasks.eval-preflight]
+description = "Check the Lambda MicroVMs environment's imports resolve, by name, before any AWS call."
+# The same preflight `eval.run` runs before dispatch, exposed standalone: there is no CI to hang it
+# on, so this is how a checkout confirms the `eval` group is synced correctly without spending on AWS.
+run = "uv run --group eval python -c 'from eval.runner import preflight_environment_imports as p; p(); print(\"eval preflight OK: the MicroVMs environment and its deps import\")'"
+
+[tasks.smoke-datapoint]
+description = "Prove ONE emitted datapoint grades: dispatch oracle + nop on AWS MicroVMs and assert. NOT part of `check`."
+# The standing gradeability guard. Dispatches `--agent oracle` (submits the reference findings; must
+# score non-zero coverage and exit 0) and `--agent nop` (does nothing; must credit nothing) against one
+# task, then asserts oracle ≠ nop. No model, no API spend — AWS MicroVM time only: one image build plus
+# two short trials, ~5-10 minutes. Deliberately outside `check`/CI: it needs AWS credentials, applied
+# Terraform, and minutes of wall time. Run it before any change to `emit.py`, `verifier_tpl/`, or
+# `candidate.py`'s patch writing — the three places whose defects a green offline gate cannot catch,
+# because only executing a datapoint reveals them. A missing prerequisite exits non-zero with a named
+# reason; it never skips. Pass the task dir after `--`, e.g. `mise run smoke-datapoint -- <task-dir>`.
+run = "scripts/smoke-datapoint.sh"
+
+# --- Security scanners ------------------------------------------------------
+# One namespaced `security:*` task per scanner, rolled up into `security` (the task layout used by
+# aws-samples/sample-autonomous-cloud-coding-agents). Every tool version is pinned per the note at the
+# top of this file; the one thing NOT version-pinned is semgrep's registry rulesets (`p/*`), which are
+# fetched at scan time — so `security:sast` needs network.
+
+[tasks."security:bandit"]
+description = "Python SAST with bandit (pinned bandit + Python; config in pyproject.toml)"
+# `--python 3.12` is load-bearing, not cosmetic: this is a 3.12 repo (see `[tools]` above), but
+# `uv tool run` otherwise runs bandit under the machine's newest interpreter (3.14 here), and
+# bandit 1.8.6's AST visitor throws on 3.14 — "exception while scanning file" on every file, which
+# bandit still exits 0 for, so it reports zero issues having scanned nothing (a false green). Pin the
+# interpreter to 3.12 so the scan actually runs and is a function of the checked-in config.
+run = "uv tool run --python 3.12 bandit@1.8.6 -c pyproject.toml -r ."
+
+[tasks."security:secrets"]
+description = "Scan the git history for committed secrets with gitleaks"
+run = "gitleaks git . --no-banner --redact"
+
+[tasks."security:sast"]
+description = "SAST with semgrep (registry packs: python, terraform, secrets, OWASP top ten)"
+# No `--quiet`: on a clean run semgrep would otherwise print nothing, and an empty result is
+# indistinguishable from a scan that matched no files. The summary ("Ran N rules on M files")
+# is the proof-of-scan this repo's CONVENTIONS require. `--error` still sets a non-zero exit on findings.
+# `--metrics=off --disable-version-check`: with registry packs (`--config p/*`) semgrep OSS defaults
+# metrics to on and POSTs usage to metrics.semgrep.dev at exit — that POST (and the version check) hang
+# forever behind a restrictive network, after the scan has already finished. Turn both off so it exits.
+run = "semgrep scan --config p/python --config p/terraform --config p/secrets --config p/owasp-top-ten --metrics=off --disable-version-check --error ."
+
+[tasks.infra-check]
+description = "IaC scan of the Terraform with checkov (pinned); also runs inside the rolled-up `security` task"
+run = "uv tool run checkov@3.3.19 -d infrastructure/terraform --framework terraform --quiet"
+
+[tasks.security]
+description = "Run all security scanners: bandit, gitleaks, semgrep (SAST), checkov (IaC)"
+run = [
+  { task = "security:bandit" },
+  { task = "security:secrets" },
+  { task = "security:sast" },
+  { task = "infra-check" },
+]
+
+[tasks.check]
+description = "Lint, type check, security scan, and test — the pre-merge gate"
+depends = ["lint", "typecheck", "security", "test"]
+
+[tasks.infra-plan]
+description = "Preview Terraform changes (terraform init + plan)"
+run = [
+  "terraform -chdir=infrastructure/terraform init -upgrade",
+  "terraform -chdir=infrastructure/terraform plan",
+]
+
+[tasks.infra-apply]
+description = "Deploy or update the eval infrastructure (terraform init + apply)"
+run = [
+  "terraform -chdir=infrastructure/terraform init -upgrade",
+  "terraform -chdir=infrastructure/terraform apply",
+]
+
+[tasks.eval]
+description = "Run the core-bet eval (Workstream G): G-1 trials → G-2 quality judge → G-3 report. NOT part of `check`."
+# Deliberately excluded from `check`/CI: it drives a live model and a network (needs Bedrock + the
+# Lambda MicroVMs environment for the trials, and the quality judge for the report). Skips cleanly
+# (exit 0) when credentials or the `harbor` runner are absent. Pass args after `--`, e.g.
+# `mise run eval -- -m <model>`.
+# The script reads MICROVM_BUCKET / MICROVM_BUILD_ROLE_ARN / MICROVM_EXECUTION_ROLE_ARN from
+# `terraform output` and errors with a deployment command if the infrastructure is not yet applied.
+run = "scripts/run-eval.sh"

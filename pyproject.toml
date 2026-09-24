@@ -1,0 +1,152 @@
+# The eval-harvest package manifest and its tool configuration. Runtime dependencies are
+# empty on purpose (NFR-5/FR-3): the product's spine is that the pipeline pulls in no third
+# party at run time. Dev-only tooling (ruff, pytest, mypy) lives in the dev dependency group.
+
+[project]
+name = "eval-harvest"
+version = "0.1.0"
+description = "Build Harbor PR-review eval datapoints from a repository's PR history."
+requires-python = ">=3.12"
+dependencies = []  # NFR-5/FR-3: the audit is "the list is empty". Do not add a runtime dep.
+
+[project.scripts]
+eval-harvest = "eval_harvest.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eval_harvest"]
+
+# Dev-only tooling. `pydantic` is a dev dependency, not a runtime one: it is used by the eval
+# harness under `eval/` (Workstream G), which is outside the shipped `eval_harvest` package. The
+# FR-3/NFR-5 audit is about `[project].dependencies` (still empty) and the package's own imports
+# (S-18 scans `src/eval_harvest/` only), so a dev dependency the CLI never imports does not touch it.
+[dependency-groups]
+dev = ["ruff", "pytest", "pytest-xdist", "mypy", "pydantic"]
+# eval group: harbor (from PyPI) + the packaged MicroVMs environment and the deps it needs.
+# `mise run eval` syncs this group so `harbor` lands in the venv and is on PATH.
+# `harbor[lambda-microvms]` is NOT a real extra — PyPI Harbor ships no such extra, so
+# `uv` treated it as an unknown extra and silently no-op'd it, leaving dockerfile-parse and the
+# boto3>=1.43.35 floor uninstalled. We depend on the extra's real contents directly, and on
+# `harvest-env`: the packaged environment Harbor loads by import path (H-3). It cannot live under
+# `harbor.*` on a PYTHONPATH overlay — a regular package cannot be partially overlaid by a same-named
+# namespace portion — so it is its own distribution (see [tool.uv.sources] and harvest_env/).
+eval = ["harbor==0.22.0", "microvms>=0.5.0", "boto3>=1.43.35", "dockerfile-parse>=2.0.1", "harvest-env"]
+
+[tool.uv.sources]
+# The packaged Lambda MicroVMs environment lives in-repo; install it editable so a checkout runs the
+# eval without a `/tmp` shim. Only synced with the `eval` group, so `mise run check` (dev) is
+# untouched.
+harvest-env = { path = "harvest_env", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The repo root is on the path so tests can import the `eval/` harness (Workstream G), which — unlike
+# the installed `eval_harvest` package — is a top-level directory, not a distribution. `tests` is on
+# the path too so the `unit/` and `integration/` subtrees can import the shared `fixtures` package
+# and `guard_registry` (both kept at the `tests/` root) regardless of which subdirectory a test is in.
+pythonpath = [".", "tests"]
+# `-rs` prints every skip with its reason in the short summary. `tests/test_harbor_loader_contract.py`
+# skips when the `eval` group is not synced, and a check that silently disappears reads as coverage
+# the summary line is what keeps "not run" distinguishable from "passed".
+# `-n auto` (pytest-xdist) fans the suite across every core. The suite is serial-by-default
+# otherwise, and it is dominated by real git subprocesses — each paying the macOS Command Line
+# Tools shim tax on `/usr/bin/git` (gitcmd.resolve_git prefers os.defpath) — so a single worker
+# leaves 11 cores idle. Parallelism cuts the wall time ~3x. Tests isolate on `tmp_path`, so they
+# are xdist-safe.
+addopts = ["-rs", "-n", "auto"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+# harvest_env/ is a separate component (the Lambda MicroVMs Harbor environment), not part of this
+# package: it imports harbor internals only present in the `eval` group. work/, eval/runs/ and
+# eval/reports/ are generated output, gitignored — keep this list in step with `.gitignore`; ruff only
+# skips them today because it honours gitignore, and naming them here makes that independent of it.
+# `tests/test_static_analysis_excludes.py` pins the three tools together.
+extend-exclude = ["harvest_env", "work", "eval/runs", "eval/reports"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RET", "PL"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests pin the concrete exit-code contract (0/2/3/4/5) by asserting on the literal values (PLR2004).
+# Test functions take many pytest fixtures and parametrize params, so the argument-count limits
+# (PLR0913/PLR0917) do not fit them; and test doubles mirror external APIs verbatim (boto3's
+# `Bucket`/`Key`/`imageIdentifier` kwargs), so the lowercase-argument rule (N803) does not either.
+"tests/**" = ["PLR2004", "PLR0913", "PLR0917", "N803"]
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# The eval harness under `eval/` uses Pydantic; its plugin teaches mypy about model constructors and
+# frozen models so strict mode stays green. It is inert for the package, which imports no Pydantic.
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_any_explicit = false  # Any is allowed only with a comment explaining why (see standards).
+# harvest_env/ is a separate component (it imports harbor internals only in the `eval` group, which
+# `mise run typecheck` does not sync). work/, eval/runs/ and eval/reports/ are generated output,
+# gitignored — keep this list in step with `.gitignore`. eval/runs/ in particular holds one copy of
+# the eval_harvest package per trial, and two trials make mypy report a duplicate module name and then
+# stop checking, so the whole source tree silently goes untyped.
+exclude = ["harvest_env/", "work/", "eval/runs/", "eval/reports/"]
+
+[[tool.mypy.overrides]]
+# `harbor` ships no `py.typed`, and it lives in the `eval` group, which `mise run typecheck` does not
+# sync — so mypy sees it as either untyped or absent depending on what was last installed. Treating it
+# as `Any` makes `tests/test_harbor_loader_contract.py` type-check identically either way. It is
+# the third-party loader under test, not code this repo can annotate.
+module = ["harbor.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `boto3` is imported by the verifier template `verifier_tpl/score.py` (which runs inside the verifier
+# MicroVM image where boto3 is installed) and by the environment test's boto3 fakes; `botocore` (its
+# dependency) is imported for `ClientError` by the same test. Neither is a dev/typecheck dependency —
+# both live in the `eval` group — so mypy sees them as absent here. The judge's Bedrock response is
+# `Any` regardless of stubs, so treating the modules as `Any` changes nothing the type checker could
+# have caught.
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `harvest_env`, `microvms`, and `dockerfile_parse` live in the `eval` group, which `mise run
+# typecheck` does not sync, so mypy sees them as absent. `eval/runner.py`'s preflight imports them
+# by literal statement (so no dynamic-import construct exists for security scanners to flag); treating
+# them as `Any` lets that guard type-check whether or not the group is installed.
+module = ["harvest_env.*", "microvms", "microvms.*", "dockerfile_parse", "dockerfile_parse.*"]
+ignore_missing_imports = true
+
+[tool.bandit]
+# Security scan of our code only. harvest_env/ is a separate component (the Lambda MicroVMs Harbor
+# environment), out of this package's scope — same as ruff and mypy. tests/ is excluded because assert
+# is the test framework's idiom (B101), not a production hazard — B101 stays active for src/.
+# Deliberate exceptions elsewhere are marked inline with `# nosec BXXX` and a reason. work/, eval/runs/
+# and eval/reports/ are generated output, gitignored — keep this list in step with `.gitignore`.
+# Unlike ruff, bandit does not honour gitignore, so without this it would scan every copy of the
+# package that a trial leaves under eval/runs/.
+exclude_dirs = ["harvest_env", "tests", ".venv", ".git", "work", "eval/runs", "eval/reports"]
+# B603 (subprocess call — "check for execution of untrusted input") is skipped project-wide, not
+# inline. It is a blanket flag on every `subprocess.run(...)` whose argv is not a list of literals,
+# and it fires here on calls that are already safe by construction: a literal-led argv list, never a
+# shell string (`shell=False`), with the real binary pinned via `executable=`. These live at a handful
+# of reviewed call sites (git and gh in gitcmd.py, git in seal.py, harbor in the eval runner and smoke
+# guard) — not a single chokepoint. Inline `# nosec B603` proved unreliable for these multi-line calls
+# — bandit attributes B603 to a line that shifts with the call's shape and the bandit/Python version
+# (a clean opening-line directive still leaked a finding on a long call), so a per-line suppression
+# silently re-breaks on a bump. A justified project-wide skip is the honest, reproducible expression of
+# "these subprocess calls are reviewed safe". `shell=True` (B602) would still fire, which is the thing
+# actually worth catching.
+#
+# B607 ("start a process with a partial executable path") is a separate finding, suppressed per-call
+# with `# nosec B607` rather than skipped here: it flags the bare-name argv[0] (`git`, `gh`, `harbor`),
+# which is kept literal on purpose so the semgrep `dangerous-subprocess-use-audit` rule sees a static
+# command, and it fires regardless of `executable=`. An absolute argv[0] would clear B607 but trip that
+# semgrep rule, so the two cannot both be satisfied in code; the per-call suppression is at each site.
+skips = ["B603"]

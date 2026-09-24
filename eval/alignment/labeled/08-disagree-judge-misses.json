@@ -1,0 +1,34 @@
+{
+  "id": "08-disagree-judge-misses",
+  "human_overall_pass": false,
+  "human_note": "SUBTLE wrong-state: the diff drops the fix by one hunk so the defect is only half-present. A human reviewer catches that the change no longer cleanly exhibits the reviewed defect; the recorded judge misses it and passes the datapoint. Kept deliberately as a judge↔human disagreement so the measured agreement is a real number below 1.0.",
+  "datapoint": {
+    "directory_name": "pydantic__pydantic__pr13611-reject",
+    "kind": "reject",
+    "expected_verdict": "block",
+    "blocking_severity": "high",
+    "instruction": "Review the change on this pull-request iteration and report the defects a competent reviewer should catch.",
+    "change_patch": "--- a/pydantic/types.py\n+++ b/pydantic/types.py\n@@\n-    if isinstance(pattern, str):\n-        return pattern\n+    return pattern  # partially reverted; see follow-up\n",
+    "oracle_findings": [
+      {"statement": "A re.Pattern is passed where a str pattern is expected; compiled patterns are not handled.", "severity": "high", "reference_only": false, "blocking": true}
+    ],
+    "change_risk_structural": "medium",
+    "change_risk_classified": "medium"
+  },
+  "pr_context": {
+    "repo": "pydantic/pydantic",
+    "pr_number": 13611,
+    "reviewed_state": "the change-requested state",
+    "review_summary": "Reviewer requested changes over an unhandled re.Pattern; the datapoint's diff was assembled from a partially-reverted intermediate that does not cleanly reproduce the reviewed defect."
+  },
+  "recorded_reply": {
+    "criteria": [
+      {"name": "oracle-reflects-review", "passed": true, "score": 0.85, "rationale": "The finding matches the reviewer's comment."},
+      {"name": "change-matches-reviewed-state", "passed": true, "score": 0.75, "rationale": "The diff looks like the reviewed state."},
+      {"name": "verdict-fits-kind", "passed": true, "score": 1.0, "rationale": "reject expects block and a substantive finding is present."},
+      {"name": "instruction-outcome-neutral", "passed": true, "score": 1.0, "rationale": "Instruction leaks nothing."},
+      {"name": "nits-not-promoted", "passed": true, "score": 1.0, "rationale": "The finding is a genuine defect."}
+    ],
+    "notes": "Looks like a faithful reject datapoint."
+  }
+}
