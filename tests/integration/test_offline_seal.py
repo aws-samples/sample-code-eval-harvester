@@ -111,7 +111,7 @@ def _prepare(tmp_path: Path) -> tuple[Path, CandidateDict, Path]:
 
 
 def _install_network_stub(monkeypatch: Any) -> None:
-    """Replace `subprocess.run` so any git network verb or `gh` invocation raises instead of running.
+    """Replace `subprocess.run` so any git network verb or `gh`/`glab` invocation raises instead of running.
 
     Local git verbs pass straight through to the real `subprocess.run`, so the sealing path's genuine
     local reads still work; only a call that would reach the forge trips the stub.
@@ -122,8 +122,8 @@ def _install_network_stub(monkeypatch: Any) -> None:
         if isinstance(argv, (list, tuple)) and argv:
             parts = [str(fragment) for fragment in argv]
             executable = Path(parts[0]).name
-            if executable == "gh":
-                raise AssertionError(f"offline sealing path invoked gh: {parts}")
+            if executable in {"gh", "glab"}:
+                raise AssertionError(f"offline sealing path invoked {executable}: {parts}")
             if _NETWORK_VERBS & set(parts):
                 raise AssertionError(f"offline sealing path issued a network git verb: {parts}")
         return real_run(argv, *args, **kwargs)

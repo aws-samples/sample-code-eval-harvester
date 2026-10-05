@@ -6,6 +6,37 @@ something already settled, and so the reasoning survives when the plan gets rewr
 decision reverses an earlier one, the reversal says so. Requirements-level decisions live in
 `decisions-prd.md`.
 
+## 2026-10-05 — GitLab merge requests (issue #2)
+
+**The forge comes from the clone's configured `origin` URL, read once.** Host `github.com` is GitHub,
+a host naming `gitlab` is GitLab, and `--forge` covers a self-managed host named anything else. The
+configured URL is read rather than `git remote get-url`'s because the latter applies `insteadOf`
+rewrites, which are transport aliases, not the project's name. An unparseable remote still falls back
+to GitHub's last-two-segments slug (local fixtures rely on it), but `--forge gitlab` on one is a usage
+error rather than a guessed `gitlab.com` (ADR-7).
+
+**GitLab is reshaped into GitHub's payloads, not given its own pipeline.** One iteration-ordering,
+binding, and recoverability implementation stays authoritative; `gitlab.py` only reshapes. GraphQL
+over REST because it pages in one call and is readable without a token on a public project, which is
+what let `tests/fixtures/glab/recorded/` hold verbatim gitlab.com responses (ADR-7).
+
+**A verdict binds by time; a comment thread binds by its root.** GitLab records no SHA on an approval
+and re-anchors a DiffNote's position forward when its line survives a push — observed on recorded
+!3978, where a comment written against `0b9a6767` now reports `a29c81f1`. Binding each reply by its
+own time split threads; binding by raw position put comments on versions they predate. The root note,
+read against the head current when it was written, is the anchor, and the line is mapped back through
+`git diff -U0` (ADR-7).
+
+**`GITLAB_TOKEN` survives into `glab`'s environment while `GITHUB_TOKEN` is stripped from `gh`'s.** For
+`gh` an ambient token silently overrides the operator's login; for a self-managed GitLab in CI it is
+the intended credential, and `glab` has no other non-interactive path. Prompts, update checks, and
+telemetry are disabled.
+
+**Force-pushed rounds are fetched by SHA.** GitLab keeps every note-referenced commit around, so
+capture fetches engaged commits the MR head does not reach into `refs/remotes/mr-versions/` — outside
+`refs/remotes/pr/`, so survey's head count is unchanged. The fixture for the negative case must prune
+the origin, not just unreference the commit: protocol v2 serves any object the server still holds.
+
 ## 2026-09-04 — technical plan
 
 **The CLI is one uv-installable package with verb subcommands, not per-verb single-file scripts.**

@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from eval_harvest.candidate import Candidate, CandidateDict, CommentDict, FindingDict, IterationDict
+from eval_harvest.forge_host import ForgeHost
 from eval_harvest.harbor import (
     CompiledTask,
     EmittedFile,
@@ -851,7 +852,8 @@ class _TaskPlan:
 
     @property
     def repo_url(self) -> str:
-        return f"https://github.com/{self.repo}.git"
+        """The anonymous clone URL, recovered from the recorded ``pr_url`` so a GitLab MR clones from its host."""
+        return ForgeHost.clone_url_from_pull_request_url(self.candidate["pr_url"], self.repo)
 
     @property
     def base_commit(self) -> str:
@@ -864,8 +866,8 @@ class _TaskPlan:
 
     @property
     def task_name(self) -> str:
-        """Harbor's `org/name` task id, e.g. `our-org/our-repo__pr1234-reject`."""
-        return f"{self.repo}__pr{self.candidate['pr_number']}-{self.kind}"
+        """Harbor's `org/name` task id, e.g. `our-org/our-repo__pr1234-reject`; a nested GitLab path folds into the name."""
+        return f"{ForgeHost.harbor_org_name(self.repo)}__pr{self.candidate['pr_number']}-{self.kind}"
 
     @property
     def directory_name(self) -> str:

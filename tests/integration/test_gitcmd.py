@@ -56,6 +56,13 @@ class TestChildEnvironment:
         assert child["GIT_OPTIONAL_LOCKS"] == "0"
         assert child["HOME"] == "/home/x"  # a valid home survives (Windows needs one)
 
+    def test_glab_prompts_disabled_and_gitlab_token_kept(self) -> None:
+        parent = {"GITLAB_TOKEN": "glpat_ci_credential", "PATH": "/usr/bin"}
+        child = GitCommandRunner.gitlab_child_env(parent)
+        assert child["GLAB_NO_PROMPT"] == "1"
+        assert child["GLAB_SEND_TELEMETRY"] == "0"
+        assert child["GITLAB_TOKEN"] == "glpat_ci_credential"  # the self-managed CI credential must survive
+
 
 class TestExecutableResolution:
     """git resolution prefers os.defpath but falls back to the real PATH (Windows: os.defpath misses)."""

@@ -1,0 +1,131 @@
+{
+  "iid": "7",
+  "diffHeadSha": "{{ROUND3_TIP}}",
+  "notes": {
+    "pageInfo": {"hasNextPage": false, "endCursor": null},
+    "nodes": [
+      {
+        "id": "gid://gitlab/DiffNote/101",
+        "body": "`return a - b` subtracts; `add` should add.",
+        "system": false,
+        "createdAt": "2026-08-01T10:00:00Z",
+        "maxAccessLevelOfAuthor": "Developer",
+        "author": {"username": "reviewer-alice"},
+        "discussion": {"id": "gid://gitlab/Discussion/d1"},
+        "systemNoteMetadata": null,
+        "position": {
+          "filePath": "code.py", "oldLine": null, "newLine": 2, "oldPath": "code.py", "newPath": "code.py",
+          "positionType": "text",
+          "diffRefs": {"baseSha": "{{BASE_SHA}}", "headSha": "{{FORCE_PUSHED_TIP}}", "startSha": "{{BASE_SHA}}"}
+        }
+      },
+      {
+        "id": "gid://gitlab/Note/102",
+        "body": "requested changes",
+        "system": true,
+        "createdAt": "2026-08-01T10:00:30Z",
+        "maxAccessLevelOfAuthor": "Developer",
+        "author": {"username": "reviewer-alice"},
+        "discussion": {"id": "gid://gitlab/Discussion/s1"},
+        "systemNoteMetadata": {"action": "requested_changes"},
+        "position": null
+      },
+      {
+        "id": "gid://gitlab/Note/103",
+        "body": "added 1 commit\n\n<ul><li>{{ROUND2_SHORT}} - fix: correct operator and loop bound</li></ul>\n\n[Compare with previous version](/group/sub/project/-/merge_requests/7/diffs?diff_id=11&start_sha={{FORCE_PUSHED_TIP}})",
+        "system": true,
+        "createdAt": "2026-08-02T09:00:00Z",
+        "maxAccessLevelOfAuthor": "Maintainer",
+        "author": {"username": "author-bob"},
+        "discussion": {"id": "gid://gitlab/Discussion/s2"},
+        "systemNoteMetadata": {"action": "commit"},
+        "position": null
+      },
+      {
+        "id": "gid://gitlab/DiffNote/104",
+        "body": "Iterating the items directly reads better than indexing.",
+        "system": false,
+        "createdAt": "2026-08-02T10:00:00Z",
+        "maxAccessLevelOfAuthor": "Developer",
+        "author": {"username": "reviewer-alice"},
+        "discussion": {"id": "gid://gitlab/Discussion/d2"},
+        "systemNoteMetadata": null,
+        "position": {
+          "filePath": "code.py", "oldLine": null, "newLine": 6, "oldPath": "code.py", "newPath": "code.py",
+          "positionType": "text",
+          "diffRefs": {"baseSha": "{{BASE_SHA}}", "headSha": "{{ROUND3_TIP}}", "startSha": "{{BASE_SHA}}"}
+        }
+      },
+      {
+        "id": "gid://gitlab/Note/105",
+        "body": "approved this merge request",
+        "system": true,
+        "createdAt": "2026-08-02T10:01:00Z",
+        "maxAccessLevelOfAuthor": "Developer",
+        "author": {"username": "reviewer-alice"},
+        "discussion": {"id": "gid://gitlab/Discussion/s3"},
+        "systemNoteMetadata": {"action": "approved"},
+        "position": null
+      },
+      {
+        "id": "gid://gitlab/Note/106",
+        "body": "added 1 commit\n\n<ul><li>{{ROUND3_SHORT}} - docs: name the module</li></ul>\n\n[Compare with previous version](/group/sub/project/-/merge_requests/7/diffs?diff_id=12&start_sha={{ROUND2_TIP}})",
+        "system": true,
+        "createdAt": "2026-08-03T09:00:00Z",
+        "maxAccessLevelOfAuthor": "Maintainer",
+        "author": {"username": "author-bob"},
+        "discussion": {"id": "gid://gitlab/Discussion/s4"},
+        "systemNoteMetadata": {"action": "commit"},
+        "position": null
+      },
+      {
+        "id": "gid://gitlab/Note/107",
+        "body": "reset approvals from @reviewer-alice by pushing to the branch",
+        "system": true,
+        "createdAt": "2026-08-03T09:00:05Z",
+        "maxAccessLevelOfAuthor": "Maintainer",
+        "author": {"username": "author-bob"},
+        "discussion": {"id": "gid://gitlab/Discussion/s5"},
+        "systemNoteMetadata": {"action": "approvals_reset"},
+        "position": null
+      },
+      {
+        "id": "gid://gitlab/DiffNote/108",
+        "body": "Done in the previous push.",
+        "system": false,
+        "createdAt": "2026-08-03T09:05:00Z",
+        "maxAccessLevelOfAuthor": "Maintainer",
+        "author": {"username": "author-bob"},
+        "discussion": {"id": "gid://gitlab/Discussion/d2"},
+        "systemNoteMetadata": null,
+        "position": {
+          "filePath": "code.py", "oldLine": null, "newLine": 6, "oldPath": "code.py", "newPath": "code.py",
+          "positionType": "text",
+          "diffRefs": {"baseSha": "{{BASE_SHA}}", "headSha": "{{ROUND3_TIP}}", "startSha": "{{BASE_SHA}}"}
+        }
+      },
+      {
+        "id": "gid://gitlab/Note/109",
+        "body": "Overall this looks good.",
+        "system": false,
+        "createdAt": "2026-08-03T09:30:00Z",
+        "maxAccessLevelOfAuthor": "Developer",
+        "author": {"username": "reviewer-alice"},
+        "discussion": {"id": "gid://gitlab/Discussion/g1"},
+        "systemNoteMetadata": null,
+        "position": null
+      },
+      {
+        "id": "gid://gitlab/Note/110",
+        "body": "approved this merge request",
+        "system": true,
+        "createdAt": "2026-08-03T10:00:00Z",
+        "maxAccessLevelOfAuthor": "Developer",
+        "author": {"username": "reviewer-alice"},
+        "discussion": {"id": "gid://gitlab/Discussion/s6"},
+        "systemNoteMetadata": {"action": "approved"},
+        "position": null
+      }
+    ]
+  }
+}

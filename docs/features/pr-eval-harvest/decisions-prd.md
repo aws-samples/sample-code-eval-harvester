@@ -5,6 +5,15 @@ decided, and why it was decided that way. This exists so a later session does no
 already settled, and so the reasoning survives when the PRD gets rewritten. Where a decision reverses
 an earlier one, the reversal says so.
 
+## 2026-10-05 — GitLab brought into scope (issue #2)
+
+**GitLab merge requests are harvestable; other forges stay out.** The customer's repositories include
+a self-managed GitLab with Microsoft SSO configured inside GitLab: people sign in through the identity
+provider, `glab` authenticates to the API with a personal access token, and git uses an SSH remote.
+That shape needs no browser session at run time, so it fits a CLI driven by an agent. A host whose SSO
+proxy sits in front of the API as well (the whole host behind a sign-in wall) needs a session cookie
+on every call and is not supported yet; `glab`'s `custom_headers` is the likely follow-up seam.
+
 ## 2026-09-04 — discovery session that produced `prd.md`
 
 **The product is a CLI, not a pipeline.** eval-harvest is an agent-native CLI that a coding agent

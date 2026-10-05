@@ -22,17 +22,15 @@ from eval_harvest.brief import Brief
 from eval_harvest.candidate import Candidate, CandidateDict, CommentDict, Emittability, Violation
 from eval_harvest.dataset import Dataset, DatasetRefusalError
 from eval_harvest.emit import Emit, EmitRefusalError, EmitResult
-from eval_harvest.forge import Forge, ForgeError
-from eval_harvest.gitcmd import GitCommandRunner
+from eval_harvest.forge import Forge, ForgeError, PullRequestFacts
+from eval_harvest.forge_host import ForgeHost, ForgeHostError, ForgeKind, ForgeRemote
+from eval_harvest.gitlab import GitLab
 from eval_harvest.riskmap import RISK_MAP_FILENAME, RiskMap
 from eval_harvest.rubric import RUBRIC_FILENAME, Rubric
 from eval_harvest.show import Show
 from eval_harvest.survey import Survey, SurveyError
 from eval_harvest.tomlw import TomlValue
 from eval_harvest.verify import ContentScanSummary, Verify, VerifyReport
-
-#: A repo slug is exactly ``owner/name`` — two path segments — when derived from a non-GitHub remote.
-_SLUG_SEGMENTS = 2
 
 # The methodology text below is the product (tech plan §5.1): the CLI's stdout is the only place
 # the review-eval methodology lives, because the customer does not carry it and the driving agent's
@@ -331,7 +329,9 @@ class Cli:
             "--clone", type=Path, required=True, metavar="<dir>", help="path to the local clone (holds the pr/* refs)"
         )
         survey_parser.add_argument(
-            "--repo", metavar="<org/name>", help="owner/name to fetch with gh; omit when using --from-json"
+            "--repo",
+            metavar="<org/name>",
+            help="owner/name to fetch with gh (or group/project with glab on GitLab); omit when using --from-json",
         )
         survey_parser.add_argument(
             "--from-json", type=Path, metavar="<file>", help="reuse a saved `gh pr list` payload (the offline/test path)"
@@ -342,11 +342,12 @@ class Cli:
             action="store_true",
             help="skip fetching refs/pull/*/head (for a clone already fetched or a mirror); the default fetches",
         )
+        Cli.add_forge_argument(survey_parser)
         survey_parser.add_argument(
             "--state", default="all", choices=("all", "open", "closed", "merged"), help="which PR states to survey (default: all)"
         )
         survey_parser.add_argument(
-            "--limit", type=int, default=500, metavar="<n>", help="max PRs to fetch with gh (default: 500)"
+            "--limit", type=int, default=500, metavar="<n>", help="max PRs to fetch with gh or glab (default: 500)"
         )
         survey_parser.add_argument(
             "--branch", default="main", metavar="<name>", help="the mainline branch to scan (default: main)"
@@ -404,6 +405,21 @@ class Cli:
             default=Path(),
             metavar="<dir>",
             help="the dataset directory (holds risk-map.toml, candidates/)",
+        )
+        Cli.add_forge_argument(capture_parser)
+
+    @staticmethod
+    def add_forge_argument(parser: argparse.ArgumentParser) -> None:
+        """Register ``--forge``: which forge the clone's ``origin`` is on, when its host name does not say.
+
+        ``auto`` reads it from the host (``github.com`` → GitHub, a host naming ``gitlab`` → GitLab);
+        a self-managed GitLab on any other host name needs ``--forge gitlab``.
+        """
+        parser.add_argument(
+            "--forge",
+            default="auto",
+            choices=("auto", *(kind.value for kind in ForgeKind)),
+            help="the forge origin is on: auto (from its host name, the default), github (gh), or gitlab (glab)",
         )
 
     @staticmethod
@@ -688,20 +704,20 @@ class Cli:
         """
         json_mode: bool = arguments.json
         clone: Path = arguments.clone
-        if not (clone / ".git").is_dir():
-            print(f"eval-harvest survey: {clone} is not a git clone (clone the repo first, then pass its path)", file=sys.stderr)
+        forge_remote = cls._survey_clone_remote_or_report(clone, arguments)
+        if forge_remote is None:
             return ExitCode.USAGE
-
-        pull_requests = cls._load_survey_pull_requests(arguments)
+        pull_requests = cls._load_survey_pull_requests(arguments, forge_remote)
         if pull_requests is None:
             return ExitCode.RUNTIME_UNAVAILABLE if arguments.repo else ExitCode.USAGE
 
         remote = Survey.default_remote(clone)
+        refspec = forge_remote.pull_head_refspec
         # Online only: a plain clone has no refs/pull/*/head, so fetch them before enumerating —
         # harvesting is impossible without it. --from-json is a pure re-render and must never touch the
         # network (NFR-2), and --no-fetch is the escape hatch for an already-fetched clone or a mirror.
         if arguments.repo and not arguments.no_fetch:
-            ref_count = cls._fetch_pull_heads_or_refuse(clone, remote, json_mode=json_mode)
+            ref_count = cls._fetch_pull_heads_or_refuse(clone, remote, refspec, json_mode=json_mode)
             if ref_count is None:
                 return ExitCode.REFUSAL  # the fetch failed and the refusal was already emitted
             if not json_mode:
@@ -730,20 +746,28 @@ class Cli:
                 check="no-harvestable-pr",
                 datapoint=arguments.repo,
                 offending=no_harvestable,
-                next_=Survey.dominant_blocker_remedy(payload["prs"], remote),
+                next_=Survey.dominant_blocker_remedy(payload["prs"], remote, refspec=refspec),
                 exit_code=ExitCode.REFUSAL,
                 json_mode=json_mode,
             )
         rendering = (
-            Survey.render_json(payload, remote=remote)
+            Survey.render_json(payload, remote=remote, refspec=refspec)
             if json_mode
-            else Survey.render_summary(payload, branch=arguments.branch, remote=remote)
+            else Survey.render_summary(payload, branch=arguments.branch, remote=remote, refspec=refspec)
         )
         print(rendering, end="")
         return ExitCode.SUCCESS
 
     @classmethod
-    def _fetch_pull_heads_or_refuse(cls, clone: Path, remote: str, *, json_mode: bool) -> int | None:
+    def _survey_clone_remote_or_report(cls, clone: Path, arguments: argparse.Namespace) -> ForgeRemote | None:
+        """The forge project of the clone ``survey`` reads, or ``None`` after printing why there is none (a usage error)."""
+        if not (clone / ".git").is_dir():
+            print(f"eval-harvest survey: {clone} is not a git clone (clone the repo first, then pass its path)", file=sys.stderr)
+            return None
+        return cls._forge_remote_or_report(clone, arguments, verb="survey")
+
+    @classmethod
+    def _fetch_pull_heads_or_refuse(cls, clone: Path, remote: str, refspec: str, *, json_mode: bool) -> int | None:
         """Fetch the pull-head namespace and return the ref count, or ``None`` after emitting a refusal.
 
         A fetch that cannot reach the remote (no such remote, no network, no permission) refuses
@@ -751,25 +775,27 @@ class Cli:
         crashing with a traceback. Returns the ref count on success, or ``None`` when it refused —
         the caller then propagates ``REFUSAL``."""
         try:
-            return Survey.fetch_pull_head_refs(clone, remote)
+            return Survey.fetch_pull_head_refs(clone, remote, refspec=refspec)
         except (SurveyError, ForgeError) as error:
             cls.refuse(
                 check="pull-head-fetch-failed",
                 datapoint=str(clone),
                 offending=str(error),
-                next_=f"fetch it yourself then re-run with --no-fetch: {Survey.fetch_remedy(remote)}",
+                next_=f"fetch it yourself then re-run with --no-fetch: {Survey.fetch_remedy(remote, refspec=refspec)}",
                 exit_code=ExitCode.REFUSAL,
                 json_mode=json_mode,
             )
             return None
 
     @staticmethod
-    def _load_survey_pull_requests(arguments: argparse.Namespace) -> list[dict[str, Any]] | None:
-        """Load the PR list from ``--from-json`` or ``gh``; ``None`` signals a usage or runtime failure.
+    def _load_survey_pull_requests(arguments: argparse.Namespace, forge_remote: ForgeRemote) -> list[dict[str, Any]] | None:
+        """Load the PR list from ``--from-json``, ``gh``, or ``glab``; ``None`` signals a usage or runtime failure.
 
-        A ``--from-json`` payload is trusted as-is (the offline/test path); the ``gh`` path caches the
-        fetched payload when ``--cache`` is given. Neither flag, or a failed
-        ``gh`` call, returns ``None`` for the caller to map onto the right exit-code class.
+        A ``--from-json`` payload is trusted as-is (the offline/test path); the online path caches the
+        fetched payload when ``--cache`` is given. On GitLab the merge requests are read with ``glab``
+        from the clone's host, ``--repo`` naming the project path, and reshaped into ``gh``'s rows.
+        Neither flag, or a failed forge call, returns ``None`` for the caller to map onto the right
+        exit-code class.
         """
         if arguments.from_json:
             loaded: list[dict[str, Any]] = json.loads(arguments.from_json.read_text(encoding="utf-8"))
@@ -778,8 +804,12 @@ class Cli:
             print("eval-harvest survey: pass --repo to fetch with gh, or --from-json to reuse a saved payload", file=sys.stderr)
             return None
         try:
-            pull_requests = Survey.fetch_pull_requests(arguments.repo, arguments.state, arguments.limit)
-        except SurveyError as error:
+            if forge_remote.kind is ForgeKind.GITLAB:
+                project = ForgeRemote(ForgeKind.GITLAB, forge_remote.host, arguments.repo)
+                pull_requests = GitLab.fetch_merge_requests(project, arguments.state, arguments.limit)
+            else:
+                pull_requests = Survey.fetch_pull_requests(arguments.repo, arguments.state, arguments.limit)
+        except (SurveyError, ForgeError) as error:
             print(f"eval-harvest survey: {error}", file=sys.stderr)
             return None
         if arguments.cache:
@@ -815,18 +845,20 @@ class Cli:
         if risk_map is None:
             return ExitCode.REFUSAL  # the missing/invalid risk-map refusal was already emitted
 
-        repo = cls._repo_slug_from_clone(clone)
+        remote = cls._forge_remote_or_report(clone, arguments, verb="capture")
+        if remote is None:
+            return ExitCode.USAGE
         if from_survey is not None:
             return cls._capture_batch(
-                from_survey, arguments, repo=repo, clone=clone, dataset=dataset, risk_map=risk_map, json_mode=json_mode
+                from_survey, arguments, remote=remote, clone=clone, dataset=dataset, risk_map=risk_map, json_mode=json_mode
             )
         if pr_number is None:  # unreachable after the mutual-exclusion guard, but narrows the type without an assert
             return ExitCode.USAGE
-        return cls._capture_single(pr_number, repo=repo, clone=clone, dataset=dataset, risk_map=risk_map, json_mode=json_mode)
+        return cls._capture_single(pr_number, remote=remote, clone=clone, dataset=dataset, risk_map=risk_map, json_mode=json_mode)
 
     @classmethod
     def _capture_single(  # noqa: PLR0913 — capture's contract: the PR, its clone/dataset, the parsed risk map, and the output mode
-        cls, pr_number: int, *, repo: str, clone: Path, dataset: Path, risk_map: dict[str, TomlValue], json_mode: bool
+        cls, pr_number: int, *, remote: ForgeRemote, clone: Path, dataset: Path, risk_map: dict[str, TomlValue], json_mode: bool
     ) -> int:
         """Capture one PR: fetch its facts, write the candidate, and report emittability (§9).
 
@@ -835,15 +867,15 @@ class Cli:
         with the batch path (:meth:`_write_capture_candidate`) so a batch's candidates are byte-identical.
         """
         try:
-            facts = Forge.capture(repo, pr_number, clone)
+            facts = cls._capture_facts(remote, pr_number, clone)
         except ForgeError as error:
             print(f"eval-harvest capture: {error}", file=sys.stderr)
             return ExitCode.RUNTIME_UNAVAILABLE
         candidate_path, candidate, emittability = cls._write_capture_candidate(
-            pr_number, repo=repo, dataset=dataset, facts=facts, risk_map=risk_map
+            pr_number, remote=remote, dataset=dataset, facts=facts, risk_map=risk_map
         )
         if not emittability.recoverable_indices:
-            offending, next_ = cls._no_emittable_refusal_fields(candidate, pr_number)
+            offending, next_ = cls._no_emittable_refusal_fields(candidate, pr_number, remote)
             return cls.refuse(
                 check="no-emittable-iteration",
                 datapoint=f"pr-{pr_number}",
@@ -861,7 +893,7 @@ class Cli:
         from_survey: Path,
         arguments: argparse.Namespace,
         *,
-        repo: str,
+        remote: ForgeRemote,
         clone: Path,
         dataset: Path,
         risk_map: dict[str, TomlValue],
@@ -886,7 +918,7 @@ class Cli:
 
         report = Batch.run(
             targets,
-            lambda pr: cls._capture_item(pr, repo=repo, clone=clone, dataset=dataset, risk_map=risk_map),
+            lambda pr: cls._capture_item(pr, remote=remote, clone=clone, dataset=dataset, risk_map=risk_map),
             lambda pr: (f"pr-{pr}", pr),
             on_progress=cls._batch_progress,
         )
@@ -939,12 +971,12 @@ class Cli:
 
     @classmethod
     def _capture_item(
-        cls, pr_number: int, *, repo: str, clone: Path, dataset: Path, risk_map: dict[str, TomlValue]
+        cls, pr_number: int, *, remote: ForgeRemote, clone: Path, dataset: Path, risk_map: dict[str, TomlValue]
     ) -> ItemResult:
         """Capture one PR for the batch: a forge failure or a no-emittable PR is a per-item refusal, not a crash."""
         key = f"pr-{pr_number}"
         try:
-            facts = Forge.capture(repo, pr_number, clone)
+            facts = cls._capture_facts(remote, pr_number, clone)
         except ForgeError as error:
             return ItemResult.refuse(
                 key,
@@ -954,18 +986,25 @@ class Cli:
                 next_="the forge call failed for this PR; the batch continued — re-run `capture <pr>` alone to inspect it",
             )
         candidate_path, candidate, emittability = cls._write_capture_candidate(
-            pr_number, repo=repo, dataset=dataset, facts=facts, risk_map=risk_map
+            pr_number, remote=remote, dataset=dataset, facts=facts, risk_map=risk_map
         )
         if not emittability.recoverable_indices:
-            offending, next_ = cls._no_emittable_refusal_fields(candidate, pr_number)
+            offending, next_ = cls._no_emittable_refusal_fields(candidate, pr_number, remote)
             return ItemResult.refuse(key, pr_number, check="no-emittable-iteration", offending=offending, next_=next_)
         return ItemResult.success(
             key, pr_number, payload=cls._capture_payload(candidate_path, candidate, emittability), detail=f"→ {candidate_path}"
         )
 
     @staticmethod
+    def _capture_facts(remote: ForgeRemote, pr_number: int, clone: Path) -> PullRequestFacts:
+        """Fetch one PR's or MR's facts from the forge ``remote`` names — the one place capture branches on it."""
+        if remote.kind is ForgeKind.GITLAB:
+            return GitLab.capture(remote, pr_number, clone)
+        return Forge.capture(remote.project_path, pr_number, clone)
+
+    @staticmethod
     def _write_capture_candidate(
-        pr_number: int, *, repo: str, dataset: Path, facts: Any, risk_map: dict[str, TomlValue]
+        pr_number: int, *, remote: ForgeRemote, dataset: Path, facts: Any, risk_map: dict[str, TomlValue]
     ) -> tuple[Path, CandidateDict, Emittability]:
         """Write one PR's candidate from already-fetched facts; return its path, the candidate, and emittability.
 
@@ -976,8 +1015,8 @@ class Cli:
         risk_structural, risk_rule = RiskMap.structural_risk(Candidate.changed_paths(facts), risk_map)
         candidate_path = Candidate.write_to_dataset(
             facts,
-            repo=repo,
-            pr_url=f"https://github.com/{repo}/pull/{pr_number}",
+            repo=remote.project_path,
+            pr_url=remote.pull_request_url(pr_number),
             dataset_dir=dataset,
             risk_structural=risk_structural,
             risk_structural_rule=risk_rule,
@@ -986,13 +1025,14 @@ class Cli:
         return candidate_path, candidate, Candidate.emittability(candidate)
 
     @staticmethod
-    def _no_emittable_refusal_fields(candidate: CandidateDict, pr_number: int) -> tuple[str, str]:
+    def _no_emittable_refusal_fields(candidate: CandidateDict, pr_number: int, remote: ForgeRemote) -> tuple[str, str]:
         """The ``(offending, next_)`` of the ``no-emittable-iteration`` refusal — shared by single and batch capture."""
         offending = (
             f"no iteration has a recoverable tip (all {len(candidate['iterations'])} reviewed states were "
             "force-pushed away); the candidate was written for the record but cannot be emitted"
         )
-        next_ = f"pick another PR from `survey`; this one's reviewed states are unreachable from refs/pull/{pr_number}/head"
+        unreachable_from = remote.pull_head_ref(pr_number)
+        next_ = f"pick another PR from `survey`; this one's reviewed states are unreachable from {unreachable_from}"
         return offending, next_
 
     @classmethod
@@ -1665,23 +1705,19 @@ class Cli:
         return ExitCode.SUCCESS
 
     @staticmethod
-    def _repo_slug_from_clone(clone: Path) -> str:
-        """The ``owner/name`` repo slug read from the clone's ``origin`` remote URL.
+    def _forge_remote_or_report(clone: Path, arguments: argparse.Namespace, *, verb: str) -> ForgeRemote | None:
+        """The forge project the clone's ``origin`` names, or ``None`` after printing why it cannot be read.
 
-        Parses the GitHub SSH (``git@github.com:owner/name.git``) and HTTPS
-        (``https://github.com/owner/name.git``) forms; for any other remote (a local fixture path)
-        it falls back to the last two path segments so the value is still deterministic and non-empty.
+        Delegates parsing to :meth:`ForgeHost.from_clone` (no network call). A remote no forge host
+        can be read from falls back to GitHub (the last two path segments, what a local fixture path
+        needs); ``--forge gitlab`` on such a remote is a usage error rather than a guessed host.
         """
-        _, url = GitCommandRunner.git(clone, "remote", "get-url", "origin")
-        trimmed = url.strip().removesuffix(".git")
-        match = re.search(r"github\.com[:/](?P<slug>[^/]+/[^/]+)$", trimmed)
-        if match:
-            return match.group("slug")
-        # Fallback for a non-GitHub remote (a local fixture path): the last owner/name-shaped pair.
-        owner_name = [segment for segment in trimmed.replace("\\", "/").split("/") if segment][-_SLUG_SEGMENTS:]
-        if len(owner_name) == _SLUG_SEGMENTS:
-            return "/".join(owner_name)
-        return owner_name[-1] if owner_name else "unknown/unknown"
+        forge = None if arguments.forge == "auto" else ForgeKind(arguments.forge)
+        try:
+            return ForgeHost.from_clone(clone, forge=forge)
+        except ForgeHostError as error:
+            print(f"eval-harvest {verb}: {error}", file=sys.stderr)
+            return None
 
     @classmethod
     def _report_capture(
