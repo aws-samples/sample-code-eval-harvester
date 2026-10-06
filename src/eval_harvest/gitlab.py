@@ -90,6 +90,9 @@ query($fullPath: ID!, $iid: String!, $first: Int!, $after: String) {
 #: GitLab's GraphQL page-size ceiling.
 _PAGE_SIZE = 100
 
+#: How much of a non-JSON ``glab`` body a ``ForgeError`` quotes — enough to recognise a sign-in page.
+_QUOTED_BODY_CHARS = 200
+
 #: ``survey --state`` spelled as GitLab's ``MergeRequestState``. GitLab's ``closed`` excludes merged
 #: MRs where gh's includes them; ``all`` and ``merged`` are the states a harvest uses.
 _STATE_FILTER = {"all": "all", "open": "opened", "closed": "closed", "merged": "merged"}
@@ -240,9 +243,9 @@ class GitLab:
         Round trips: one ``git fetch`` of the MR head, one GraphQL call per 100 notes, and one ``git
         fetch`` per engaged commit missing after that — the force-pushed rounds, which GitLab keeps.
         """
-        Forge.fetch_refs(clone, remote.single_pull_head_refspec(iid))
+        Forge.fetch_refs(clone, remote.single_pull_head_refspec(iid), remote=remote.git_remote)
         payloads = cls.review_payloads(cls.fetch_merge_request(remote, iid))
-        cls._fetch_missing_engaged_commits(clone, iid, payloads)
+        cls._fetch_missing_engaged_commits(clone, iid, payloads, git_remote=remote.git_remote)
         comments = cls.remap_moved_comment_lines(payloads.comments, clone)
         return Forge.reconstruct_facts(
             iid, clone, base_ref, reviews=payloads.reviews, comments=comments, timeline=payloads.timeline
@@ -278,13 +281,14 @@ class GitLab:
 
         A missing *or* unreadable project comes back as ``project: null`` with exit 0 — GitLab does not
         distinguish them to an unauthenticated caller — so that is refused with the login that fixes
-        the private case, never read as "no merge requests".
+        the private case, never read as "no merge requests". A body that is not a JSON object (a proxy's
+        sign-in page, exit 0) is a ``ForgeError`` too, so it refuses this one MR rather than abort a batch.
         """
         argv = ["api", "graphql", "--hostname", remote.host, "-f", f"query={query}", *variables]
         code, out, err = GitCommandRunner.glab(argv)
         if code != 0:
             raise ForgeError(f"glab api graphql on {remote.host} failed ({code}): {err or out}")
-        loaded = json.loads(out)
+        loaded = GitLab._json_object_or_forge_error(remote, out)
         if loaded.get("errors"):
             raise ForgeError(f"glab api graphql on {remote.host} returned errors: {loaded['errors']}")
         project: dict[str, Any] | None = (loaded.get("data") or {}).get("project")
@@ -295,8 +299,21 @@ class GitLab:
             )
         return project
 
+    @staticmethod
+    def _json_object_or_forge_error(remote: ForgeRemote, out: str) -> dict[str, Any]:
+        """``out`` parsed as a JSON object, or a ``ForgeError`` quoting the start of what came back instead."""
+        try:
+            loaded = json.loads(out)
+        except json.JSONDecodeError:
+            loaded = None
+        if not isinstance(loaded, dict):
+            raise ForgeError(
+                f"glab api graphql on {remote.host} returned a body that is not a JSON object: {out[:_QUOTED_BODY_CHARS]!r}"
+            )
+        return loaded
+
     @classmethod
-    def _fetch_missing_engaged_commits(cls, clone: Path, iid: int, payloads: ForgePayloads) -> None:
+    def _fetch_missing_engaged_commits(cls, clone: Path, iid: int, payloads: ForgePayloads, *, git_remote: str) -> None:
         """Fetch by SHA each reviewed or commented-on commit the MR head does not reach.
 
         Best effort by design: a commit the forge no longer serves is left absent, and
@@ -305,7 +322,7 @@ class GitLab:
         for sha in cls._engaged_commits(payloads):
             if not cls._commit_is_present(clone, sha):
                 try:
-                    Forge.fetch_refs(clone, f"+{sha}:{_VERSION_REF_PREFIX}/{iid}/{sha}")
+                    Forge.fetch_refs(clone, f"+{sha}:{_VERSION_REF_PREFIX}/{iid}/{sha}", remote=git_remote)
                 except ForgeError:
                     continue
 

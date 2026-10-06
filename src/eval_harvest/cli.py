@@ -419,7 +419,10 @@ class Cli:
             "--forge",
             default="auto",
             choices=("auto", *(kind.value for kind in ForgeKind)),
-            help="the forge origin is on: auto (from its host name, the default), github (gh), or gitlab (glab)",
+            help=(
+                "the forge the clone's remote (origin, else its first) is on: auto (from its host name, the default), "
+                "github (gh; github.com only), or gitlab (glab)"
+            ),
         )
 
     @staticmethod
@@ -711,7 +714,7 @@ class Cli:
         if pull_requests is None:
             return ExitCode.RUNTIME_UNAVAILABLE if arguments.repo else ExitCode.USAGE
 
-        remote = Survey.default_remote(clone)
+        remote = forge_remote.git_remote
         refspec = forge_remote.pull_head_refspec
         # Online only: a plain clone has no refs/pull/*/head, so fetch them before enumerating —
         # harvesting is impossible without it. --from-json is a pure re-render and must never touch the
@@ -1000,7 +1003,7 @@ class Cli:
         """Fetch one PR's or MR's facts from the forge ``remote`` names — the one place capture branches on it."""
         if remote.kind is ForgeKind.GITLAB:
             return GitLab.capture(remote, pr_number, clone)
-        return Forge.capture(remote.project_path, pr_number, clone)
+        return Forge.capture(remote.project_path, pr_number, clone, remote=remote.git_remote)
 
     @staticmethod
     def _write_capture_candidate(
@@ -1706,7 +1709,7 @@ class Cli:
 
     @staticmethod
     def _forge_remote_or_report(clone: Path, arguments: argparse.Namespace, *, verb: str) -> ForgeRemote | None:
-        """The forge project the clone's ``origin`` names, or ``None`` after printing why it cannot be read.
+        """The forge project the clone's remote names, or ``None`` after printing why it cannot be read.
 
         Delegates parsing to :meth:`ForgeHost.from_clone` (no network call). A remote no forge host
         can be read from falls back to GitHub (the last two path segments, what a local fixture path

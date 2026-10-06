@@ -114,7 +114,9 @@ class Forge:
     # ───────────────────────────── online entry (network) ─────────────────────────────
 
     @classmethod
-    def capture(cls, repo: str, pr_number: int, clone: Path, base_ref: str = "HEAD") -> PullRequestFacts:
+    def capture(
+        cls, repo: str, pr_number: int, clone: Path, base_ref: str = "HEAD", *, remote: str = "origin"
+    ) -> PullRequestFacts:
         """Fetch one PR's facts: recover its head, read reviews/comments/timeline, reconstruct.
 
         The only network entry point. It makes a bounded number of forge round trips per PR — one
@@ -123,7 +125,7 @@ class Forge:
         local ``git`` work that :meth:`reconstruct_facts` does (reachability, merge-base, diff) runs
         against the fetched clone and touches no remote.
         """
-        cls.fetch_pull_request_head(clone, pr_number)
+        cls.fetch_pull_request_head(clone, pr_number, remote)
         reviews = cls._fetch_api_list(f"repos/{repo}/pulls/{pr_number}/reviews")
         comments = cls._fetch_api_list(f"repos/{repo}/pulls/{pr_number}/comments")
         timeline = cls._fetch_api_list(f"repos/{repo}/issues/{pr_number}/timeline")
