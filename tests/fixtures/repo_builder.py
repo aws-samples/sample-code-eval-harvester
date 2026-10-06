@@ -37,6 +37,10 @@ _GIT = shutil.which("git", path=os.defpath) or "git"
 #: templates are placeholder tokens the builder substitutes with the fixture's real commit SHAs.
 _GH_PAYLOAD_DIR = Path(__file__).parent / "gh"
 
+#: Where the ``glab api graphql`` merge-request payloads live: ``recorded/`` holds verbatim gitlab.com
+#: responses, and each other subdirectory is a template whose SHA tokens the builder substitutes.
+GLAB_PAYLOAD_DIR = Path(__file__).parent / "glab"
+
 #: The pull-request number the forge fixtures use throughout, matched by the recorded payloads.
 _FIXTURE_PR_NUMBER = 1234
 
@@ -80,6 +84,31 @@ _ISOLATED_ENV = {
     "HOME": os.devnull,
     "TZ": "UTC",
 }
+
+
+#: The merge-request iid the GitLab fixture uses, matched by its payload template.
+_FIXTURE_MR_IID = 7
+
+
+@dataclass(frozen=True, slots=True)
+class MergeRequestFixture:
+    """A built GitLab merge request: its origin/clone, the three head SHAs, and its GraphQL node.
+
+    ``force_pushed_tip`` is the round-1 head the author force-pushed away; the origin keeps it alive
+    under ``refs/keep-around/<sha>`` only when the builder was asked to, which is how GitLab itself
+    retains a commit a review comment points at. ``merge_request`` is the ``mergeRequest`` GraphQL
+    node with the real SHAs substituted in.
+    """
+
+    origin: Path
+    clone: Path
+    iid: int
+    base_ref: str
+    base_sha: str
+    force_pushed_tip: str
+    round2_tip: str
+    round3_tip: str
+    merge_request: dict[str, Any]
 
 
 class RepoBuilder:
@@ -271,6 +300,61 @@ class RepoBuilder:
             timeline=cls._load_gh_payload("unrecoverable", "timeline.json", subs),
         )
 
+    #: Round 3 — a header comment prepended to the approved fix, which shifts every line down by one.
+    #: A comment GitLab moved forward onto this version names a line one greater than the reviewer saw.
+    _ROUND3_CODE = "# Summation helpers.\n" + _ROUND2_CODE
+
+    @classmethod
+    def build_gitlab_merge_request_with_force_push(cls, root: Path, *, keep_around: bool = True) -> MergeRequestFixture:
+        """A squash-merged GitLab MR whose round-1 head was force-pushed away, then two more pushes.
+
+        Round 1 (``force_pushed_tip``) drew a comment and a requested-changes verdict; the author
+        force-pushed it away for round 2 (approved, with a comment GitLab later moved onto round 3);
+        round 3 prepended a header line and was approved again. ``refs/merge-requests/<iid>/head``
+        points at round 3, so round 2 is reachable from it but round 1 is not — it survives on the
+        origin only under ``refs/keep-around/<sha>``, the ref GitLab keeps for every commit a note
+        references. ``keep_around=False`` prunes it from the origin, the state a GC'd forge would be in.
+        """
+        origin = cls._init_origin(root)
+        base_sha = cls._head_sha(origin)
+        cls._git(origin, "checkout", "--quiet", "-b", "feature")
+        force_pushed_tip = cls._commit_file(origin, cls._ROUND1_CODE, "PR work: add scan()", date="2026-08-01T09:00:00")
+        if keep_around:
+            cls._git(origin, "update-ref", f"refs/keep-around/{force_pushed_tip}", force_pushed_tip)
+        cls._git(origin, "reset", "--quiet", "--hard", "main")  # the force-push
+        round2_tip = cls._commit_file(
+            origin, cls._ROUND2_CODE, "fix: correct operator and loop bound", date="2026-08-02T09:00:00"
+        )
+        round3_tip = cls._commit_file(origin, cls._ROUND3_CODE, "docs: name the module", date="2026-08-03T09:00:00")
+        cls._git(origin, "update-ref", f"refs/merge-requests/{_FIXTURE_MR_IID}/head", round3_tip)
+        cls._squash_merge_and_delete_branch(origin, "feature", date="2026-08-03T11:00:00")
+        if not keep_around:
+            # Protocol v2 serves any object the server still holds, so "unreferenced" is not enough:
+            # the round must be gone from the object store, as it is after a forge's GC.
+            cls._git(origin, "reflog", "expire", "--expire=now", "--all")
+            cls._git(origin, "gc", "--quiet", "--prune=now")
+
+        clone = cls._clone(origin, root / "clone")
+        subs = {
+            "BASE_SHA": base_sha,
+            "FORCE_PUSHED_TIP": force_pushed_tip,
+            "ROUND2_TIP": round2_tip,
+            "ROUND2_SHORT": round2_tip[:8],
+            "ROUND3_TIP": round3_tip,
+            "ROUND3_SHORT": round3_tip[:8],
+        }
+        return MergeRequestFixture(
+            origin=origin,
+            clone=clone,
+            iid=_FIXTURE_MR_IID,
+            base_ref="main",
+            base_sha=base_sha,
+            force_pushed_tip=force_pushed_tip,
+            round2_tip=round2_tip,
+            round3_tip=round3_tip,
+            merge_request=cls._load_payload_template(GLAB_PAYLOAD_DIR / "force_pushed" / "merge_request.json", subs),
+        )
+
     @classmethod
     def _init_origin(cls, root: Path) -> Path:
         """Create the origin repo with one mainline commit (the before-state) on ``main``."""
@@ -344,6 +428,15 @@ class RepoBuilder:
         for token, sha in substitutions.items():
             text = text.replace(f"{{{{{token}}}}}", sha)
         loaded: list[dict[str, Any]] = json.loads(text)
+        return loaded
+
+    @staticmethod
+    def _load_payload_template(path: Path, substitutions: dict[str, str]) -> dict[str, Any]:
+        """Load a JSON-object payload template and substitute the fixture's real SHAs for its tokens."""
+        text = path.read_text(encoding="utf-8")
+        for token, sha in substitutions.items():
+            text = text.replace(f"{{{{{token}}}}}", sha)
+        loaded: dict[str, Any] = json.loads(text)
         return loaded
 
     @classmethod

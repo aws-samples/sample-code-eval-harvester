@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Final
 
 from eval_harvest.emit import REWARD_KEYS
+from eval_harvest.forge_host import ForgeHost
 from eval_harvest.harbor import DATASET_MANIFEST_FILENAME, Harbor
 from eval_harvest.riskmap import RISK_LEVELS
 from eval_harvest.tomlw import emit_document
@@ -257,6 +258,9 @@ class Dataset:
     def _dataset_name(records: list[_TaskRecord]) -> str:
         """The dataset's Harbor `org/name`: the datapoints' shared origin repo (v1 mines one repo).
 
+        The origin repo keeps a nested GitLab group's full path as provenance; the name folds it into
+        Harbor's one-slash shape exactly as each task name does.
+
         A dataset that mixes origin repos is outside the v1 model, so this refuses rather than pick a
         name silently — the manifest and registry each need exactly one addressable name.
         """
@@ -268,7 +272,7 @@ class Dataset:
                 offending=f"the datapoints come from {len(repos)} repos ({repos}); a v1 dataset is one repository",
                 next_="build one dataset per repository (one `--dataset` dir per repo)",
             )
-        return repos[0]
+        return ForgeHost.harbor_org_name(repos[0])
 
     # ───────────────────────────── writing the artefacts ─────────────────────────────
 

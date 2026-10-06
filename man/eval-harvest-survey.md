@@ -8,7 +8,7 @@ the rest are not.
 ## SYNOPSIS
 
 ```
-eval-harvest survey --clone <dir> (--repo <org/name> | --from-json <file>) [--no-fetch] [--state ...] [--summary]
+eval-harvest survey --clone <dir> (--repo <org/name> | --from-json <file>) [--no-fetch] [--forge auto|github|gitlab] [--state ...] [--summary]
 ```
 
 ## DESCRIPTION
@@ -23,6 +23,13 @@ to skip that fetch for a clone you already fetched or a mirror. `--from-json` re
 payload and never touches the network. That fetch uses your environment's forge auth — for a private
 repo it fails with `pull-head-fetch-failed` unless a non-interactive `git fetch` already works (see
 `eval-harvest(1)`).
+
+On GitLab (a clone whose `origin` host names `gitlab`, or any host with `--forge gitlab`), `survey`
+lists merge requests with `glab api graphql` against that host — `--repo` is the full project path,
+nested groups included — and fetches `refs/merge-requests/*/head` instead. Run
+`glab auth login --hostname <host>` once first; a project the login cannot read is refused, not
+reported empty. GitLab's `--state closed` excludes merged MRs, and `review_rounds` counts reviewers
+who engaged rather than each submission.
 
 ## METHODOLOGY
 

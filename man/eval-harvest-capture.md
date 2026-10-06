@@ -8,8 +8,8 @@ facts.
 ## SYNOPSIS
 
 ```
-eval-harvest capture <pr> --clone <dir> [--dataset <dir>]
-eval-harvest capture --from-survey <file> [--limit <n>] [--pr <n>]... --clone <dir> [--dataset <dir>]
+eval-harvest capture <pr> --clone <dir> [--dataset <dir>] [--forge auto|github|gitlab]
+eval-harvest capture --from-survey <file> [--limit <n>] [--pr <n>]... --clone <dir> [--dataset <dir>] [--forge auto|github|gitlab]
 ```
 
 ## DESCRIPTION
@@ -25,6 +25,11 @@ error (exit 2).
 `capture` fetches `refs/pull/<pr>/head` every run and has no `--no-fetch` escape, so a non-interactive
 `git fetch` to the forge must work before you run it. For a private repo, set up auth first —
 `gh auth setup-git`, an SSH remote, or a credential helper; see `eval-harvest(1)`.
+
+On GitLab, `<pr>` is the merge request's iid. `capture` fetches `refs/merge-requests/<iid>/head`,
+reads the MR's notes with `glab`, and fetches by SHA each reviewed version the head no longer reaches
+— GitLab keeps them, so a force-pushed round is usually recoverable. The candidate's `repo` is the full
+project path and `pr_url` the MR's own URL, which is where `emit` later clones from.
 
 ## SAMPLE INPUT RESTRICTION (S2)
 

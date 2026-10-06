@@ -54,15 +54,15 @@ _STATIC_BLOCKER_REMEDIES: dict[str, str] = {
 _FETCH_REMEDY_BLOCKERS = frozenset({"no-pull-head-ref", "squash-without-change-tip"})
 
 
-def _fetch_remedy(remote: str) -> str:
+def _fetch_remedy(remote: str, refspec: str = PULL_HEAD_REFSPEC) -> str:
     """The runnable ``git fetch`` command that populates ``refs/remotes/pr/*``, quoted for the shell."""
-    return f"git fetch {remote} '{PULL_HEAD_REFSPEC}'"
+    return f"git fetch {remote} '{refspec}'"
 
 
-def _blocker_remedy(name: str, remote: str) -> str:
-    """The one-line remedy for one blocker name, with the live ``remote`` folded into the fetch form."""
+def _blocker_remedy(name: str, remote: str, refspec: str = PULL_HEAD_REFSPEC) -> str:
+    """The one-line remedy for one blocker name, with the live ``remote`` and forge refspec folded into the fetch form."""
     if name in _FETCH_REMEDY_BLOCKERS:
-        return _fetch_remedy(remote)
+        return _fetch_remedy(remote, refspec)
     return _STATIC_BLOCKER_REMEDIES.get(name, "no automatic remedy; inspect this PR by hand or pick another")
 
 
@@ -208,7 +208,7 @@ class Survey:
         return loaded
 
     @classmethod
-    def fetch_pull_head_refs(cls, clone: Path, remote: str) -> int:
+    def fetch_pull_head_refs(cls, clone: Path, remote: str, *, refspec: str = PULL_HEAD_REFSPEC) -> int:
         """Fetch every PR's head into ``refs/remotes/pr/*`` and return how many such refs then exist.
 
         Without this step a plain clone holds none of ``refs/pull/*/head``, so every PR is blocked
@@ -216,9 +216,10 @@ class Survey:
         Delegates the single fetch to :meth:`Forge.fetch_refs` (one refspec, one owner — FR-8), which
         raises :class:`ForgeError` with git's stderr on failure so the caller can refuse rather than
         crash. The count is read back from the refs themselves, not parsed from the fetch's progress
-        output, so it is exactly what the per-PR ``have_tip`` check will see.
+        output, so it is exactly what the per-PR ``have_tip`` check will see. ``refspec`` is the
+        forge's (:attr:`ForgeRemote.pull_head_refspec`); both land in ``refs/remotes/pr/*``.
         """
-        Forge.fetch_refs(clone, PULL_HEAD_REFSPEC, remote=remote)
+        Forge.fetch_refs(clone, refspec, remote=remote)
         return cls._count_pull_head_refs(clone)
 
     @staticmethod
@@ -228,9 +229,9 @@ class Survey:
         return len([line for line in out.splitlines() if line.strip()])
 
     @staticmethod
-    def fetch_remedy(remote: str) -> str:
+    def fetch_remedy(remote: str, *, refspec: str = PULL_HEAD_REFSPEC) -> str:
         """The runnable bulk pull-head fetch for ``remote`` — the command a refusal's ``next:`` points at."""
-        return _fetch_remedy(remote)
+        return _fetch_remedy(remote, refspec)
 
     @staticmethod
     def default_remote(clone: Path) -> str:
@@ -585,7 +586,9 @@ class Survey:
         return counts
 
     @classmethod
-    def blocker_histogram(cls, rows: list[dict[str, Any]], remote: str) -> list[tuple[str, int, str]]:
+    def blocker_histogram(
+        cls, rows: list[dict[str, Any]], remote: str, *, refspec: str = PULL_HEAD_REFSPEC
+    ) -> list[tuple[str, int, str]]:
         """``(blocker, count, remedy)`` per blocker, most common first then name — the aggregate view.
 
         Turns "0 harvestable, empty table" into a named cause and a runnable fix. Ordered by
@@ -594,7 +597,7 @@ class Survey:
         """
         counts = cls._blocker_counts(rows)
         ordered = sorted(counts, key=lambda name: (-counts[name], name))
-        return [(name, counts[name], _blocker_remedy(name, remote)) for name in ordered]
+        return [(name, counts[name], _blocker_remedy(name, remote, refspec)) for name in ordered]
 
     @classmethod
     def no_harvestable_pr_offending(cls, rows: list[dict[str, Any]]) -> str | None:
@@ -614,16 +617,16 @@ class Survey:
         return f"all {total} pull request(s) are blocked; the most common blocker is {name} ({count} of {total})"
 
     @classmethod
-    def dominant_blocker_remedy(cls, rows: list[dict[str, Any]], remote: str) -> str:
+    def dominant_blocker_remedy(cls, rows: list[dict[str, Any]], remote: str, *, refspec: str = PULL_HEAD_REFSPEC) -> str:
         """The runnable remedy for the most common blocker — the ``next:`` for a ``no-harvestable-pr`` refusal."""
         counts = cls._blocker_counts(rows)
         if not counts:
             return "pick a repo whose merged PRs went through review iteration"
         name = sorted(counts, key=lambda blocker: (-counts[blocker], blocker))[0]
-        return _blocker_remedy(name, remote)
+        return _blocker_remedy(name, remote, refspec)
 
     @classmethod
-    def render_json(cls, payload: dict[str, Any], *, remote: str) -> str:
+    def render_json(cls, payload: dict[str, Any], *, remote: str, refspec: str = PULL_HEAD_REFSPEC) -> str:
         """The ``--json`` payload rendered deterministically (indent 2 + trailing ``\\n``).
 
         Carries a top-level ``blockers`` object — ``{name: {count, remedy}}`` — so a driver can act on
@@ -631,12 +634,13 @@ class Survey:
         """
         enriched = dict(payload)
         enriched["blockers"] = {
-            name: {"count": count, "remedy": remedy} for name, count, remedy in cls.blocker_histogram(payload["prs"], remote)
+            name: {"count": count, "remedy": remedy}
+            for name, count, remedy in cls.blocker_histogram(payload["prs"], remote, refspec=refspec)
         }
         return json.dumps(enriched, indent=2) + "\n"
 
     @classmethod
-    def render_summary(cls, payload: dict[str, Any], *, branch: str, remote: str) -> str:
+    def render_summary(cls, payload: dict[str, Any], *, branch: str, remote: str, refspec: str = PULL_HEAD_REFSPEC) -> str:
         """The human table: the merged-with-no-blocker PRs and their signal flags, then the blocker histogram."""
         rows = payload["prs"]
         clean = cls._harvestable(rows)
@@ -648,17 +652,17 @@ class Survey:
         ]
         lines.extend(cls._summary_row(row) for row in clean)
         summary = "\n".join(lines) + "\n"
-        return summary + cls._render_histogram(rows, remote)
+        return summary + cls._render_histogram(rows, remote, refspec)
 
     @classmethod
-    def _render_histogram(cls, rows: list[dict[str, Any]], remote: str) -> str:
+    def _render_histogram(cls, rows: list[dict[str, Any]], remote: str, refspec: str = PULL_HEAD_REFSPEC) -> str:
         """The ``blocked (N)`` section: per-blocker count and remedy, or ``""`` when nothing is blocked.
 
         Printed only when at least one PR is blocked — an always-present empty section would train the
         reader to skip the place the important information appears. ``N`` is the number of
         blocked PRs; the per-blocker counts below can sum higher when a PR carries more than one.
         """
-        histogram = cls.blocker_histogram(rows, remote)
+        histogram = cls.blocker_histogram(rows, remote, refspec=refspec)
         if not histogram:
             return ""
         blocked = sum(1 for row in rows if row["blockers"])

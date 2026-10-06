@@ -1,4 +1,4 @@
-"""The single cross-platform chokepoint for every ``git`` and ``gh`` invocation.
+"""The single cross-platform chokepoint for every ``git``, ``gh``, and ``glab`` invocation.
 
 Every online verb (survey, capture, convention surfacing) calls through here so the
 argv-only, prompt-disabled, token-stripped discipline is enforced in *one* place rather than
@@ -43,6 +43,11 @@ class GitCommandRunner:
         """
         return which("gh") or "gh"
 
+    @classmethod
+    def resolve_glab(cls, which: Callable[..., str | None]) -> str:
+        """Resolve glab on the real PATH, for the same reason as gh: a metadata client, never handed a repo."""
+        return which("glab") or "glab"
+
     @staticmethod
     def git_child_env(source: Mapping[str, str]) -> dict[str, str]:
         """Derive git's child env: disable prompts/locks and isolate config, keeping a valid home.
@@ -69,6 +74,21 @@ class GitCommandRunner:
         Removing it lets gh fall through to the credential it can actually use.
         """
         return {name: value for name, value in source.items() if name != "GITHUB_TOKEN"}
+
+    @staticmethod
+    def gitlab_child_env(source: Mapping[str, str]) -> dict[str, str]:
+        """Derive glab's child env: no prompts, no update check, no usage telemetry; credentials untouched.
+
+        Unlike ``GITHUB_TOKEN`` for gh, ``GITLAB_TOKEN`` is kept: on a self-managed GitLab in CI it is the
+        documented, often the only, credential, and glab has no keyring fallback a strip would expose.
+        The update check and telemetry are turned off because a harvest's only forge traffic should be
+        the reads it asked for.
+        """
+        child = dict(source)
+        child["GLAB_NO_PROMPT"] = "1"  # never block on an interactive prompt
+        child["GLAB_CHECK_UPDATE"] = "false"  # no release-check request to gitlab.com
+        child["GLAB_SEND_TELEMETRY"] = "0"  # no usage events to the instance
+        return child
 
     @classmethod
     def git(cls, repo: Path, *args: str) -> tuple[int, str]:
@@ -145,8 +165,28 @@ class GitCommandRunner:
         )
         return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
+    @classmethod
+    def glab(cls, argv_tail: list[str]) -> tuple[int, str, str]:
+        """Run glab with prompts disabled; return ``(returncode, stripped stdout, stripped stderr)``.
 
-#: Both executables resolved once at import, so every call reuses the same absolute path rather
+        ``argv_tail`` is the glab sub-command and its flags as argv fragments — a GraphQL query and
+        its variables are each one ``-f name=value`` fragment, never formatted into a command.
+        """
+        # Same idiom as gh() above: literal argv[0], resolved binary via ``executable=``, shell=False.
+        completed = subprocess.run(  # nosec B607 - literal argv[0], real binary via executable=; B603 skipped in pyproject
+            ["glab", *argv_tail],
+            executable=GLAB_EXECUTABLE,
+            capture_output=True,
+            text=True,
+            env=cls.gitlab_child_env(os.environ),
+            shell=False,
+            check=False,
+        )
+        return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+
+
+#: Every executable resolved once at import, so every call reuses the same absolute path rather
 #: than re-searching the environment.
 GIT_EXECUTABLE = GitCommandRunner.resolve_git(shutil.which)
 GH_EXECUTABLE = GitCommandRunner.resolve_gh(shutil.which)
+GLAB_EXECUTABLE = GitCommandRunner.resolve_glab(shutil.which)

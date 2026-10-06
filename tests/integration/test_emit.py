@@ -86,7 +86,14 @@ def _nits_only_findings() -> list[FindingDict]:
     ]
 
 
-def _prepare(tmp_path: Path, findings: list[FindingDict], *, risk_classified: str = "low") -> tuple[Path, CandidateDict]:
+def _prepare(
+    tmp_path: Path,
+    findings: list[FindingDict],
+    *,
+    risk_classified: str = "low",
+    repo: str = "our-org/our-repo",
+    pr_url: str = "https://github.com/our-org/our-repo/pull/1234",
+) -> tuple[Path, CandidateDict]:
     """A dataset holding a filled candidate (facts materialized, judgment slots filled) and its rubric.
 
     Reconstructs the S-1 squash-merge fixture offline, materializes the candidate and its patches the
@@ -108,8 +115,8 @@ def _prepare(tmp_path: Path, findings: list[FindingDict], *, risk_classified: st
     risk_structural, rule = RiskMap.structural_risk(Candidate.changed_paths(facts), _RISK_MAP)
     Candidate.write_to_dataset(
         facts,
-        repo="our-org/our-repo",
-        pr_url="https://github.com/our-org/our-repo/pull/1234",
+        repo=repo,
+        pr_url=pr_url,
         dataset_dir=dataset,
         risk_structural=risk_structural,
         risk_structural_rule=rule,
@@ -241,6 +248,28 @@ def test_task_toml_separate_mode_linux(tmp_path: Path) -> None:
     assert origin["pr_numbers"] == [1234]
     assert origin["base_commit"], "the base commit is recorded provenance"
     assert document["task"]["name"] == "our-org/our-repo__pr1234-reject"
+
+
+def test_gitlab_candidate_clones_from_its_host_under_a_harbor_shaped_name(tmp_path: Path) -> None:
+    """A nested GitLab project clones from its own host and folds its extra segments into Harbor's `org/name`.
+
+    Catches the verifier Dockerfile cloning `github.com/<group/sub/project>` (a repo that does not
+    exist) and a task id with two slashes, which Harbor's `org/name` loader rejects.
+    """
+    dataset, candidate = _prepare(
+        tmp_path,
+        _substantive_findings(),
+        repo="platform/payments/api",
+        pr_url="https://gitlab.example.com/platform/payments/api/-/merge_requests/1234",
+    )
+    task = Emit.emit_datapoint(candidate, kind="reject", dataset_dir=dataset).path
+    document = tomllib.loads((task / "task.toml").read_text(encoding="utf-8"))
+    dockerfile = (task / "environment" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert document["task"]["name"] == "platform/payments__api__pr1234-reject"
+    assert document["metadata"]["origin"]["repo"] == "platform/payments/api", "provenance keeps the full project path"
+    assert "https://gitlab.example.com/platform/payments/api.git" in dockerfile
+    assert "github.com" not in dockerfile
 
 
 def test_sealing_dockerfile_has_every_step(tmp_path: Path) -> None:
