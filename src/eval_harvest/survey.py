@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any  # gh returns arbitrary JSON objects; dict[str, Any] is the honest shape.
 
 from eval_harvest.forge import Forge
+from eval_harvest.forge_host import ForgeHost
 from eval_harvest.gitcmd import GitCommandRunner
 
 #: The bulk refspec that fetches every PR's head into the ``refs/remotes/pr/*`` namespace ``survey``
@@ -242,11 +243,7 @@ class Survey:
         assuming. Falls back to ``origin`` for a clone with no remote at all (the fetch will then fail
         and refuse, naming it).
         """
-        _, out = GitCommandRunner.git(clone, "remote")
-        remotes = [line for line in out.splitlines() if line.strip()]
-        if "origin" in remotes:
-            return "origin"
-        return remotes[0] if remotes else "origin"
+        return ForgeHost.default_remote_name(clone)
 
     # ───────────────────────────── payload assembly ─────────────────────────────
 

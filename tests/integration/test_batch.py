@@ -252,7 +252,7 @@ def _mock_forge_capture(monkeypatch: pytest.MonkeyPatch, fixture: PullRequestFix
     reusing one fixture's commits, so a multi-PR batch is exercised without a forge or network call.
     """
 
-    def replay(repo: str, pr_number: int, clone: Path, base_ref: str = "HEAD") -> object:
+    def replay(repo: str, pr_number: int, clone: Path, base_ref: str = "HEAD", *, remote: str = "origin") -> object:
         return Forge.reconstruct_facts(
             pr_number,
             fixture.clone,

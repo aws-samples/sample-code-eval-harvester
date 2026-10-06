@@ -24,7 +24,11 @@ payload and never touches the network. That fetch uses your environment's forge 
 repo it fails with `pull-head-fetch-failed` unless a non-interactive `git fetch` already works (see
 `eval-harvest(1)`).
 
-On GitLab (a clone whose `origin` host names `gitlab`, or any host with `--forge gitlab`), `survey`
+The forge is read from the clone's remote — `origin`, or its first remote when it has no `origin` —
+and that same remote is the one every fetch uses. An HTTPS remote's non-default port is kept as part
+of the host. `--forge github` is github.com only; a GitHub Enterprise host is refused (exit 2).
+
+On GitLab (a clone whose remote host names `gitlab`, or any host with `--forge gitlab`), `survey`
 lists merge requests with `glab api graphql` against that host — `--repo` is the full project path,
 nested groups included — and fetches `refs/merge-requests/*/head` instead. Run
 `glab auth login --hostname <host>` once first; a project the login cannot read is refused, not

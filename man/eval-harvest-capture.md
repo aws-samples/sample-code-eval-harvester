@@ -26,10 +26,15 @@ error (exit 2).
 `git fetch` to the forge must work before you run it. For a private repo, set up auth first —
 `gh auth setup-git`, an SSH remote, or a credential helper; see `eval-harvest(1)`.
 
+Like `survey`, `capture` reads the forge from the clone's remote (`origin`, else its first) and
+fetches from that same remote; `--forge github` is github.com only.
+
 On GitLab, `<pr>` is the merge request's iid. `capture` fetches `refs/merge-requests/<iid>/head`,
 reads the MR's notes with `glab`, and fetches by SHA each reviewed version the head no longer reaches
 — GitLab keeps them, so a force-pushed round is usually recoverable. The candidate's `repo` is the full
-project path and `pr_url` the MR's own URL, which is where `emit` later clones from.
+project path and `pr_url` the MR's own URL, which is where `emit` later clones from. A `glab`
+response that is not JSON (a proxy's sign-in page) refuses that one MR; in a `--from-survey` batch
+the other MRs still run.
 
 ## SAMPLE INPUT RESTRICTION (S2)
 
