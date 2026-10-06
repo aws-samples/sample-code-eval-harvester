@@ -596,7 +596,7 @@ def _run_capture_returning(facts: PullRequestFacts, tmp_path: Path, monkeypatch:
     dataset = tmp_path / "ds"
     dataset.mkdir()
     (dataset / "risk-map.toml").write_bytes(_risk_map_bytes())
-    monkeypatch.setattr(Forge, "capture", staticmethod(lambda repo, pr_number, clone: facts))
+    monkeypatch.setattr(Forge, "capture", staticmethod(lambda repo, pr_number, clone, *, remote="origin": facts))
     code = Cli.run(["capture", "1234", "--clone", str(fixture.clone), "--dataset", str(dataset)])
     return code, dataset
 

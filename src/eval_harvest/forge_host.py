@@ -1,11 +1,12 @@
 """Which forge a clone came from, and every forge-specific URL and refspec that follows from it.
 
-The forge is read once, from the clone's ``origin`` remote URL: its host and project path name the
-project, and the host names the forge (``github.com`` is GitHub; a host containing ``gitlab`` is
-GitLab; anything else needs ``--forge``). Everything downstream that used to hard-code GitHub — the
-pull-head refspec ``survey`` and ``capture`` fetch, the PR web URL written into the candidate, the
-clone URL the verifier Dockerfile uses — is a property of the parsed :class:`ForgeRemote`, so the
-forge is never configured in two places that can disagree.
+The forge is read once, from the clone's remote URL (``origin``, else its first remote — the same
+remote every fetch then uses): its host and project path name the project, and the host names the
+forge (``github.com`` is GitHub; a host containing ``gitlab`` is GitLab; anything else needs
+``--forge``). Everything downstream that used to hard-code GitHub — the pull-head refspec ``survey``
+and ``capture`` fetch, the PR web URL written into the candidate, the clone URL the verifier
+Dockerfile uses — is a property of the parsed :class:`ForgeRemote`, so the forge is never configured
+in two places that can disagree.
 
 A GitLab project path is kept whole: ``platform/payments/api`` is the project's identity in a nested
 group, not noise to trim to two segments. Harbor's task ids are exactly ``org/name``, so the extra
@@ -20,7 +21,7 @@ the offline layer never needs the clone at all (NFR-2).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -30,9 +31,20 @@ from eval_harvest.gitcmd import GitCommandRunner
 #: (``C:/work/origin``) is never read as a host named ``C``.
 _SCP_LIKE_REMOTE = re.compile(r"^(?:[^@/]+@)?(?P<host>[^:/]+\.[^:/]+):(?P<path>[^/].*)$")
 
-#: A URL remote, ``scheme://[user[:secret]@]host[:port]/path``. Credentials and port are matched only
-#: to be dropped: neither belongs in a host name written into a candidate.
-_URL_REMOTE = re.compile(r"^(?:https?|ssh|git)://(?:[^@/]+@)?(?P<host>[^:/@]+)(?::\d+)?/(?P<path>.+)$")
+#: A URL remote, ``scheme://[user[:secret]@]host[:port]/path``. Credentials are matched only to be
+#: dropped. A port is kept for HTTP(S), where it is the web server's, and dropped otherwise (an
+#: ``ssh://`` port is the SSH daemon's, not where the web URLs or the API live).
+_URL_REMOTE = re.compile(r"^(?P<scheme>https?|ssh|git)://(?:[^@/]+@)?(?P<host>[^:/@]+)(?::(?P<port>\d+))?/(?P<path>.+)$")
+
+#: The port each web scheme implies; an explicit default port is dropped so ``host:443`` is ``host``.
+_DEFAULT_WEB_PORTS = {"https": "443", "http": "80"}
+
+#: The only GitHub host harvesting talks to: ``gh`` is called without ``--hostname`` and the clone URL
+#: is ``github.com``'s, so a GitHub Enterprise host is refused rather than half-supported.
+_GITHUB_HOST = "github.com"
+
+#: The remote a clone is read from when it has one by this name; otherwise its first remote.
+_PREFERRED_GIT_REMOTE = "origin"
 
 #: The separator GitLab puts between a project path and its sub-pages in a web URL.
 _GITLAB_WEB_PATH_SEPARATOR = "/-/merge_requests/"
@@ -57,11 +69,15 @@ class ForgeKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ForgeRemote:
-    """One project on one forge: its kind, host, and full project path (``owner/name`` or ``group/sub/name``)."""
+    """One project on one forge: its kind, host, and full project path (``owner/name`` or ``group/sub/name``).
+
+    ``git_remote`` is the clone's remote the project was read from, so every fetch names the same one.
+    """
 
     kind: ForgeKind
     host: str
     project_path: str
+    git_remote: str = _PREFERRED_GIT_REMOTE
 
     @property
     def clone_url(self) -> str:
@@ -97,13 +113,27 @@ class ForgeHost:
 
     @classmethod
     def from_clone(cls, clone: Path, *, forge: ForgeKind | None = None) -> ForgeRemote:
-        """The forge project the clone's ``origin`` remote names (no network call).
+        """The forge project the clone's remote names, carrying that remote's name (no network call).
 
+        The remote is :meth:`default_remote_name`'s, so detection and every later fetch agree on it.
         Reads the configured URL, not ``git remote get-url``'s: that one applies ``url.*.insteadOf``
         rewrites, which are local transport aliases (a mirror, an SSH alias) and not the project's name.
         """
-        _, url = GitCommandRunner.git(clone, "config", "--get", "remote.origin.url")
-        return cls.resolve_remote_url(url, forge=forge)
+        git_remote = cls.default_remote_name(clone)
+        _, url = GitCommandRunner.git(clone, "config", "--get", f"remote.{git_remote}.url")
+        return replace(cls.resolve_remote_url(url, forge=forge), git_remote=git_remote)
+
+    @staticmethod
+    def default_remote_name(clone: Path) -> str:
+        """``origin`` if the clone has it, else its first remote.
+
+        A clone with no remote at all gets ``origin``, so the fetch fails and refuses naming it.
+        """
+        _, out = GitCommandRunner.git(clone, "remote")
+        remotes = [line for line in out.splitlines() if line.strip()]
+        if _PREFERRED_GIT_REMOTE in remotes:
+            return _PREFERRED_GIT_REMOTE
+        return remotes[0] if remotes else _PREFERRED_GIT_REMOTE
 
     @classmethod
     def resolve_remote_url(cls, url: str, *, forge: ForgeKind | None = None) -> ForgeRemote:
@@ -112,9 +142,16 @@ class ForgeHost:
         The GitHub fallback (the last two path segments of a local fixture path) is what every
         existing local-fixture capture relies on, so it stays deterministic and non-empty. Explicit
         ``--forge gitlab`` on such a remote is refused instead: there is no host to query, and a
-        silent ``gitlab.com`` default would read some other project's merge requests.
+        silent ``gitlab.com`` default would read some other project's merge requests. Explicit
+        ``--forge github`` on a host other than github.com is refused too: ``gh`` and the clone URL
+        would read github.com while ``pr_url`` named the enterprise host.
         """
         parsed = cls.parse_remote_url(url, forge=forge)
+        if parsed is not None and parsed.kind is ForgeKind.GITHUB and parsed.host != _GITHUB_HOST:
+            raise ForgeHostError(
+                f"the remote {url!r} is on {parsed.host}, but only github.com is supported for --forge github; "
+                "GitHub Enterprise hosts are not supported yet"
+            )
         if parsed is not None:
             return parsed
         if forge is ForgeKind.GITLAB:
@@ -122,7 +159,7 @@ class ForgeHost:
                 f"cannot read a GitLab host and project path from the remote {url!r}; "
                 "point origin at the GitLab project (git@host:group/project.git)"
             )
-        return ForgeRemote(ForgeKind.GITHUB, "github.com", cls._fallback_github_slug(url))
+        return ForgeRemote(ForgeKind.GITHUB, _GITHUB_HOST, cls._fallback_github_slug(url))
 
     @classmethod
     def parse_remote_url(cls, url: str, *, forge: ForgeKind | None = None) -> ForgeRemote | None:
@@ -135,7 +172,7 @@ class ForgeHost:
         match = _URL_REMOTE.match(trimmed) or _SCP_LIKE_REMOTE.match(trimmed)
         if match is None:
             return None
-        host = match.group("host").lower()
+        host = cls._web_host(match)
         project_path = match.group("path").strip("/")
         kind = forge or cls._kind_from_host(host)
         if kind is None or "/" not in project_path:
@@ -143,9 +180,19 @@ class ForgeHost:
         return ForgeRemote(kind, host, project_path)
 
     @staticmethod
+    def _web_host(match: re.Match[str]) -> str:
+        """The lower-cased host, with an HTTP(S) remote's non-default port kept as ``host:port``."""
+        host = match.group("host").lower()
+        groups = match.groupdict()
+        scheme, port = groups.get("scheme"), groups.get("port")
+        if scheme in _DEFAULT_WEB_PORTS and port and port != _DEFAULT_WEB_PORTS[scheme]:
+            return f"{host}:{port}"
+        return host
+
+    @staticmethod
     def _kind_from_host(host: str) -> ForgeKind | None:
         """GitHub for ``github.com``, GitLab for any host naming ``gitlab``, else unknown."""
-        if host == "github.com":
+        if host == _GITHUB_HOST:
             return ForgeKind.GITHUB
         if "gitlab" in host:
             return ForgeKind.GITLAB

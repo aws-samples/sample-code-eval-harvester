@@ -10,9 +10,12 @@ parse still yields the GitHub fallback the existing local-fixture tests rely on.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from eval_harvest.forge_host import ForgeHost, ForgeHostError, ForgeKind, ForgeRemote
+from eval_harvest.gitcmd import GitCommandRunner
 
 
 @pytest.mark.parametrize(
@@ -34,6 +37,11 @@ from eval_harvest.forge_host import ForgeHost, ForgeHostError, ForgeKind, ForgeR
             "https://oauth2:secret@gitlab.example.com/platform/api.git",
             ForgeRemote(ForgeKind.GITLAB, "gitlab.example.com", "platform/api"),
         ),
+        (
+            "https://gitlab.corp.example:8443/group/proj.git",
+            ForgeRemote(ForgeKind.GITLAB, "gitlab.corp.example:8443", "group/proj"),
+        ),
+        ("https://gitlab.corp.example:443/group/proj.git", ForgeRemote(ForgeKind.GITLAB, "gitlab.corp.example", "group/proj")),
     ],
 )
 def test_remote_url_names_the_forge_host_and_full_project_path(url: str, expected: ForgeRemote) -> None:
@@ -64,6 +72,31 @@ def test_unparseable_remote_falls_back_to_github_with_the_last_two_segments() ->
     Catches the GitLab work changing what every existing local-fixture capture writes as its repo.
     """
     assert ForgeHost.resolve_remote_url("/tmp/work/origin") == ForgeRemote(ForgeKind.GITHUB, "github.com", "work/origin")
+
+
+def test_an_https_remote_on_a_non_default_port_keeps_the_port_in_every_url() -> None:
+    """The port of an HTTP(S) remote is part of the web host, so the clone URL, MR URL, and glab host keep it.
+
+    Catches the port being matched and dropped: a GitLab served on ``:8443`` would be cloned and
+    queried on ``:443``, where nothing answers. An ``ssh://`` port is the SSH daemon's, not the web
+    server's, so it is still dropped (the parametrized case above).
+    """
+    remote = ForgeHost.resolve_remote_url("https://gitlab.corp.example:8443/group/proj.git")
+
+    assert remote.clone_url == "https://gitlab.corp.example:8443/group/proj.git"
+    assert remote.pull_request_url(3) == "https://gitlab.corp.example:8443/group/proj/-/merge_requests/3"
+    assert ForgeHost.clone_url_from_pull_request_url(remote.pull_request_url(3), remote.project_path) == remote.clone_url
+
+
+@pytest.mark.parametrize("url", ["git@ghe.corp.example:owner/name.git", "https://ghe.corp.example/owner/name.git"])
+def test_explicit_github_forge_on_a_host_other_than_github_com_is_refused(url: str) -> None:
+    """``--forge github`` on a GitHub Enterprise host fails loudly rather than reading github.com.
+
+    Catches the split the PR URL and the forge calls would otherwise disagree on: ``pr_url`` would
+    name the enterprise host while ``gh`` (given no host) and the clone URL point at github.com.
+    """
+    with pytest.raises(ForgeHostError, match="only github.com"):
+        ForgeHost.resolve_remote_url(url, forge=ForgeKind.GITHUB)
 
 
 def test_explicit_gitlab_forge_on_an_unparseable_remote_is_refused() -> None:
@@ -120,3 +153,34 @@ def test_task_slug_folds_nested_group_segments_into_harbors_org_name_shape() -> 
     """Harbor task names are exactly ``org/name``; a nested GitLab path folds its extra segments into the name."""
     assert ForgeHost.harbor_org_name("owner/name") == "owner/name"
     assert ForgeHost.harbor_org_name("platform/payments/api") == "platform/payments__api"
+
+
+def _clone_with_remotes(path: Path, remotes: dict[str, str]) -> Path:
+    GitCommandRunner.git(path, "init", "-q")
+    for name, url in remotes.items():
+        GitCommandRunner.git(path, "remote", "add", name, url)
+    return path
+
+
+def test_forge_is_detected_from_the_same_remote_every_fetch_uses(tmp_path: Path) -> None:
+    """A clone whose only remote is ``upstream`` is read from ``upstream``, and the fetches name it too.
+
+    Catches detection reading ``origin`` while survey fetches from the first remote: a GitLab clone
+    without ``origin`` would be taken for GitHub ``unknown/unknown``, fetch ``refs/pull/*``, and block
+    every merge request.
+    """
+    clone = _clone_with_remotes(tmp_path, {"upstream": "git@gitlab.example.com:group/proj.git"})
+
+    remote = ForgeHost.from_clone(clone)
+
+    assert remote == ForgeRemote(ForgeKind.GITLAB, "gitlab.example.com", "group/proj", git_remote="upstream")
+    assert ForgeHost.default_remote_name(clone) == "upstream"
+
+
+def test_origin_is_preferred_when_a_clone_has_several_remotes(tmp_path: Path) -> None:
+    """``origin`` wins over an earlier-sorting remote, as the fetch remedy has always assumed."""
+    clone = _clone_with_remotes(
+        tmp_path, {"a-mirror": "git@github.com:someone/fork.git", "origin": "git@gitlab.example.com:group/proj.git"}
+    )
+
+    assert ForgeHost.from_clone(clone) == ForgeRemote(ForgeKind.GITLAB, "gitlab.example.com", "group/proj", git_remote="origin")
