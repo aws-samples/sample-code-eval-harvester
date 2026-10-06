@@ -508,7 +508,7 @@ build.
   authorises automation is a scoring question, and scoring is not this tool's job.
 - The automated-approval gate itself. The customer's endpoint is switching automation on; this tool
   produces the evidence for that decision, not the CI integration that acts on it.
-- Non-GitHub forges.
+- Non-GitHub forges. (GitLab was later brought into scope as its own feature: `../gitlab-forge/prd.md`.)
 - Eval types other than PR review. The CLI is "agent-native for creating evals" in ambition;
   v1 does one kind.
 - Pooling history across repositories.
