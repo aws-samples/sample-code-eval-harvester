@@ -401,12 +401,17 @@ def test_capabilities(tmp_path: Path, agentd_path: Path, microvm_env: None) -> N
     assert not caps.cpu_limit and not caps.memory_limit
 
 
-@pytest.mark.parametrize("mode", [NetworkMode.NO_NETWORK, NetworkMode.ALLOWLIST])
+# Parametrized by value, not by `NetworkMode` member: decorator arguments are evaluated at import,
+# and without the `eval` group `NetworkMode` is never imported, so the module must still collect
+# (and skip) rather than error. The policy is built outside `pytest.raises` because Harbor itself
+# rejects `allowed_hosts` with `no-network`; only the provider's refusal may satisfy the assertion.
+@pytest.mark.parametrize(("mode", "hosts"), [("no-network", []), ("allowlist", ["pypi.org"])])
 def test_unenforceable_network_policies_are_rejected(
-    tmp_path: Path, agentd_path: Path, microvm_env: None, mode: NetworkMode
+    tmp_path: Path, agentd_path: Path, microvm_env: None, mode: str, hosts: list[str]
 ) -> None:
+    policy = NetworkPolicy(network_mode=NetworkMode(mode), allowed_hosts=hosts)
     with pytest.raises(ValueError, match="[Nn]etwork|no-network|allowlist"):
-        _make_env(tmp_path, agentd_path, network_policy=NetworkPolicy(network_mode=mode, allowed_hosts=["pypi.org"]))
+        _make_env(tmp_path, agentd_path, network_policy=policy)
 
 
 def test_compose_tasks_are_rejected(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
