@@ -19,19 +19,24 @@ The builder isolates git from the developer's global/system config (``GIT_CONFIG
 setting in ``~/.gitconfig`` cannot make a "clean" fixture fail the very channels seal checks for.
 It also pins ``TZ`` (see ``_ISOLATED_ENV``): a commit's date is serialized with the host's timezone
 offset, so an unpinned zone makes the commit SHAs — and every SHA-pinned golden — vary by machine.
+For the same reason every file it writes is written with ``newline="\\n"``: a text-mode write on
+Windows otherwise translates each newline to CRLF, which changes the blobs and so every SHA after them.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess  # nosec B404  # real git builds the fixture repos; every call below is argv-only, shell=False
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any  # the recorded gh payloads are arbitrary JSON objects; dict[str, Any] is honest.
 
-_GIT = shutil.which("git", path=os.defpath) or "git"
+from eval_harvest.gitcmd import GIT_EXECUTABLE, GitCommandRunner
+
+#: The git binary the product itself runs, resolved by the shared chokepoint: ``os.defpath`` first, then
+#: the real ``PATH`` — the only place git lives on Windows, where ``executable=`` must be absolute.
+_GIT = GIT_EXECUTABLE
 
 #: Where the recorded ``gh`` REST payloads live, one subdirectory per scenario. SHAs in these
 #: templates are placeholder tokens the builder substitutes with the fixture's real commit SHAs.
@@ -69,19 +74,19 @@ class PullRequestFixture:
 
 #: Environment that pins git to a fixed identity and no ambient config, so a fixture repo is a
 #: function of the builder calls alone — not of whatever the host's ~/.gitconfig happens to set.
+#: It starts from :meth:`GitCommandRunner.isolated_git_env`: no system, global or home-level git file,
+#: and no other parent variable (an inherited ``GIT_*`` cannot redirect or reconfigure the build), but
+#: the platform variables Windows needs to start git and a valid home. ``PATH`` is inherited too, so
+#: the transport helpers a local ``clone``/``fetch`` spawns resolve on every OS.
 #: ``TZ`` is pinned too: a commit object stores its date as ``<unix-ts> <tz-offset>``, so without a
-#: fixed zone the commit SHAs — and every SHA derived from them — would vary by host timezone. This
-#: env fully replaces the environment, so ``TZ`` must be set here (an inherited ``TZ`` is dropped)
-#: or git falls back to reading the host's ``/etc/localtime``.
+#: fixed zone the commit SHAs — and every SHA derived from them — would vary by host timezone. An
+#: inherited ``TZ`` is dropped, so ``TZ`` must be set here or git falls back to the host's zone.
 _ISOLATED_ENV = {
-    "GIT_CONFIG_GLOBAL": os.devnull,
-    "GIT_CONFIG_SYSTEM": os.devnull,
+    **GitCommandRunner.isolated_git_env(os.environ, inherit=("PATH",)),
     "GIT_AUTHOR_NAME": "Eval Harvest",
     "GIT_AUTHOR_EMAIL": "eval@harvest.test",
     "GIT_COMMITTER_NAME": "Eval Harvest",
     "GIT_COMMITTER_EMAIL": "eval@harvest.test",
-    "GIT_TERMINAL_PROMPT": "0",
-    "HOME": os.devnull,
     "TZ": "UTC",
 }
 
@@ -123,7 +128,7 @@ class RepoBuilder:
         """
         root.mkdir(parents=True, exist_ok=True)
         cls._git(root, "init", "--quiet", "--initial-branch=main")
-        (root / "code.py").write_text("def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8")
+        (root / "code.py").write_text("def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8", newline="\n")
         cls._git(root, "add", "code.py")
         cls._git(root, "commit", "--quiet", "--message", "initial commit")
         return root
@@ -133,7 +138,7 @@ class RepoBuilder:
         """Point ``objects/info/alternates`` at another object store — the motivating leak."""
         alternates = repo / ".git" / "objects" / "info" / "alternates"
         alternates.parent.mkdir(parents=True, exist_ok=True)
-        alternates.write_text(f"{source_objects}\n", encoding="utf-8")
+        alternates.write_text(f"{source_objects}\n", encoding="utf-8", newline="\n")
 
     @classmethod
     def plant_packed_refs(cls, repo: Path) -> None:
@@ -142,6 +147,7 @@ class RepoBuilder:
         (repo / ".git" / "packed-refs").write_text(
             f"# pack-refs with: peeled fully-peeled sorted \n{head_sha} refs/heads/main\n",
             encoding="utf-8",
+            newline="\n",
         )
 
     @classmethod
@@ -160,7 +166,7 @@ class RepoBuilder:
         then points ``refs/replace/<unreachable>`` at the reachable commit.
         """
         first_sha = cls._head_sha(repo)
-        (repo / "code.py").write_text("def add(a: int, b: int) -> int:\n    return a * b\n", encoding="utf-8")
+        (repo / "code.py").write_text("def add(a: int, b: int) -> int:\n    return a * b\n", encoding="utf-8", newline="\n")
         cls._git(repo, "commit", "--quiet", "--all", "--message", "second commit")
         second_sha = cls._head_sha(repo)
         cls._git(repo, "reset", "--quiet", "--hard", first_sha)
@@ -185,7 +191,8 @@ class RepoBuilder:
         superseded (rejected) state stays retrievable after a reset.
         """
         first_sha = cls._head_sha(repo)
-        (repo / "code.py").write_text("def add(a: int, b: int) -> int:\n    return a - b  # the fix\n", encoding="utf-8")
+        fixed = "def add(a: int, b: int) -> int:\n    return a - b  # the fix\n"
+        (repo / "code.py").write_text(fixed, encoding="utf-8", newline="\n")
         cls._git(repo, "commit", "--quiet", "--all", "--message", "second commit")
         cls._git(repo, "reset", "--quiet", "--hard", first_sha)
 
@@ -380,7 +387,7 @@ class RepoBuilder:
     @classmethod
     def _commit_file(cls, repo: Path, code: str, message: str, *, date: str) -> str:
         """Write ``code.py``, commit it at ``date``, and return the new commit SHA."""
-        (repo / "code.py").write_text(code, encoding="utf-8")
+        (repo / "code.py").write_text(code, encoding="utf-8", newline="\n")
         cls._git(repo, "add", "-A")
         return cls._commit_index(repo, message, date=date)
 
