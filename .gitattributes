@@ -1,0 +1,3 @@
+# Check out text files with LF on every OS. ruff format pins line-ending = "lf" in
+# pyproject.toml, so a CRLF working tree on Windows fails the format check on unchanged files.
+* text=auto eol=lf
