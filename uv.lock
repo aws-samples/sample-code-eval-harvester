@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -631,7 +631,7 @@ eval = [
     { name = "dockerfile-parse", specifier = ">=2.0.1" },
     { name = "harbor", specifier = "==0.22.0" },
     { name = "harvest-env", editable = "harvest_env" },
-    { name = "microvms", specifier = ">=0.5.0" },
+    { name = "microvms", specifier = "==0.11.0" },
 ]
 
 [[package]]
@@ -877,7 +877,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.43.35" },
     { name = "dockerfile-parse", specifier = ">=2.0.1" },
     { name = "harbor", specifier = "==0.22.0" },
-    { name = "microvms", specifier = ">=0.5.0" },
+    { name = "microvms", specifier = "==0.11.0" },
 ]
 
 [[package]]
@@ -1339,15 +1339,15 @@ wheels = [
 
 [[package]]
 name = "microvms"
-version = "0.6.0"
+version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/82/02/787de5defa9e2b32745554a351dff5450743209bdea31f8468e0d145d871/microvms-0.6.0.tar.gz", hash = "sha256:964ea2dd33a282d8a12cd4ca9ba9b5b5f1c9d2478f1b482a90c44b9de3983075", size = 595336, upload-time = "2026-09-03T19:07:58.705Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/91/78fb0c89cf647f12ed4a162c66efb79aa59f3094391b267dffad0e37da58/microvms-0.11.0.tar.gz", hash = "sha256:82add97af6d791ddb629e239daf90d77c30069cc8d401e58dfeac29878ab7ea8", size = 1097083, upload-time = "2026-10-07T16:18:47.961Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/cd/37398725b4b729ada9664a443ac768626670dd6bf45fe8627793c03a4007/microvms-0.6.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:a6d8489c81b9ec9189fadab9f3b6b91f8d4d60d654e1e70d760a4bcce954202d", size = 2939845, upload-time = "2026-09-03T19:07:49.706Z" },
-    { url = "https://files.pythonhosted.org/packages/cd/dc/e4af5766c1bc190ffae8baab58f3f274371fcf86463aa7477c763d1603d6/microvms-0.6.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:a57f89cf212067fb668faac810bacbb80992ecf706590ff4d92a4b996dcc3310", size = 2763753, upload-time = "2026-09-03T19:07:51.636Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/70/c360ce93a9fc86940543f2c73251b37d3fb933b38c9de334421afab9a48b/microvms-0.6.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e7f50a9a783413861a6674d403d9159be4897fd0830284dac719e93caa976f83", size = 3062814, upload-time = "2026-09-03T19:07:53.221Z" },
-    { url = "https://files.pythonhosted.org/packages/03/3f/1aaa7997182fd1be99e4f863b448d0e7b94f00e2176c62fa8efbbf1dbf2c/microvms-0.6.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ad6bdc23b3644940550592a3301c5cd9b936cba5f565cc7c0292d39fe5728c14", size = 3193072, upload-time = "2026-09-03T19:07:55.538Z" },
-    { url = "https://files.pythonhosted.org/packages/bf/7e/52ed53720db4adeb1f615484234d0c86392d193d42d719831b561d02517b/microvms-0.6.0-cp39-abi3-win_amd64.whl", hash = "sha256:cc7bc1f3b3bd92e34980630f1458abc37bf94ea194863692770d1c8c77dd3768", size = 2982651, upload-time = "2026-09-03T19:07:57.313Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/7c/dc3cefd37803f79b32be1206b4e60d06130caf9321c700349f2f178fef58/microvms-0.11.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:bff2a77dd40b0049e39f1e27c03afb8858c33792b3b523568b6620fd10c34dc2", size = 4281862, upload-time = "2026-10-07T16:18:37.224Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/52/5a32e10927f4e9c641f412a82d0a0a9907b93e6c436431f71ac81bb1003f/microvms-0.11.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:23b091472478c8db52398fe0a80eb944eddc0a8dfcee85f6086b3df104208889", size = 4072656, upload-time = "2026-10-07T16:18:39.681Z" },
+    { url = "https://files.pythonhosted.org/packages/71/9e/f395de8f37c4d8d90be730f4528a10afb8f5e668ea10a4897b265f875fb0/microvms-0.11.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a568de8c63a449b461a4c4858069235147d95746bb4a7d773e83d1ef7399fb35", size = 4496054, upload-time = "2026-10-07T16:18:41.91Z" },
+    { url = "https://files.pythonhosted.org/packages/03/dc/3aa67b4961d0e7574d6a75d3e1414eb8536a48d2df3706b9a865811e07ce/microvms-0.11.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ed077eeab0c0d5e02919938fe4af11707d98fac84edd8a81316c4ce11f87687b", size = 4625833, upload-time = "2026-10-07T16:18:43.864Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/23/20e2d2dc1fd20d1931f48e83a73d169dc1658a1b1819b12764eae561acae/microvms-0.11.0-cp39-abi3-win_amd64.whl", hash = "sha256:fa4d8159398f9005f1acf20c0a6175d81f73edef4afeaa824a28266f3d93ce75", size = 4486716, upload-time = "2026-10-07T16:18:46.06Z" },
 ]
 
 [[package]]

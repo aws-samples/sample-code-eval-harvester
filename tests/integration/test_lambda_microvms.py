@@ -2,7 +2,7 @@
 
 This is the project's own MIT-0 behaviour suite for `harvest_env/src/harvest_env/lambda_microvms.py`
 — the environment eval-harvest loads into an unmodified Harbor by import path (H-3). It stubs
-everything that would touch AWS or a VM (the ``Sandbox``, the ``Session``, boto3 clients) with fakes
+every AWS/VM boundary (``Sandbox`` and ``Session``) with signature-checked fakes
 that record their calls; the ``microvms`` value types (``SizeClass``, ``Region``, ``BaseImage``) are
 real and need no credentials.
 
@@ -13,9 +13,12 @@ and the whole module skips with a named reason; `mise run test-harbor` syncs `ev
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import io
 import tarfile
-import zipfile
+import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,7 +37,6 @@ EVAL_GROUP_SKIP_REASON = (
 # types the fakes stand in for.
 try:
     import microvms
-    from botocore.exceptions import ClientError
     from harbor.environments.base import ExecResult
     from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPolicy
     from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
@@ -71,133 +73,87 @@ def fake_aarch64_elf(payload: bytes = b"agentd") -> bytes:
     return bytes(header) + payload
 
 
-def fake_x86_elf() -> bytes:
-    data = bytearray(fake_aarch64_elf())
-    data[18:20] = (0x3E).to_bytes(2, "little")  # EM_X86_64
-    return bytes(data)
+# The extension exposes dynamic result objects. Any is confined to fake SDK boundaries,
+# and inspect.signature binds each call to the installed SDK before recording it.
 
 
-# ── fakes ──────────────────────────────────────────────────────────────
-
-
-def _not_found() -> ClientError:
-    return ClientError(
-        {"Error": {"Code": "ResourceNotFoundException", "Message": "nope"}},
-        "GetMicrovmImage",
-    )
-
-
-class FakeApi:
-    def __init__(self) -> None:
-        self.images: dict[str, dict[str, Any]] = {}
-        self.deleted: list[str] = []
-        self.get_calls = 0
-
-    def get_microvm_image(self, *, imageIdentifier: str) -> dict[str, Any]:
-        self.get_calls += 1
-        if imageIdentifier not in self.images:
-            raise _not_found()
-        return dict(self.images[imageIdentifier])
-
-    def delete_microvm_image(self, *, imageIdentifier: str) -> None:
-        self.deleted.append(imageIdentifier)
-        self.images.pop(imageIdentifier, None)
-
-
-class FakeS3:
-    def __init__(self) -> None:
-        self.puts: list[dict[str, Any]] = []
-
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes) -> None:
-        self.puts.append({"Bucket": Bucket, "Key": Key, "Body": Body})
-
-
-class FakeSts:
-    def get_caller_identity(self) -> dict[str, str]:
-        return {"Account": ACCOUNT}
-
-
-class FakeBotoSession:
-    def __init__(self) -> None:
-        self.api = FakeApi()
-        self.s3 = FakeS3()
-
-    def client(self, name: str) -> Any:
-        return {"lambda-microvms": self.api, "s3": self.s3, "sts": FakeSts()}[name]
+def _validate_sdk_call(method: Callable[..., object], *args: object, **kwargs: Any) -> None:
+    inspect.signature(method).bind(object(), *args, **kwargs)
 
 
 class FakeExecResult:
+    """An SDK result whose POSIX outcome is supplied by the test, never inferred by the fake."""
+
     def __init__(
         self,
         *,
-        exit_code: int | None = 0,
-        signal: int | None = None,
+        posix_exit_code: int | None = 0,
         stdout: str = "",
         stderr: str = "",
-        truncated: bool = False,
+        notes: list[str] | None = None,
+        timed_out: bool = False,
+        synthesized: bool = False,
     ) -> None:
-        self.exit_code = exit_code
-        self.signal = signal
+        self.posix_exit_code = posix_exit_code
         self.stdout = stdout
         self.stderr = stderr
-        self.truncated = truncated
+        self.notes = notes or []
+        self.timed_out = timed_out
+        self.synthesized = synthesized
 
 
-class FakeHandle:
-    def __init__(self, result: FakeExecResult, events: list[Any] | None = None) -> None:
-        self.result = result
-        self.events = events
-        self.wait_timeouts: list[float] = []
-        self.acked = 0
-        self.killed = 0
+class FakeChunk:
+    """One SDK output chunk sent through the synchronous callback."""
 
-    def wait_and_ack(self, timeout: float) -> FakeExecResult:
-        self.wait_timeouts.append(timeout)
-        self.acked += 1
-        return self.result
+    def __init__(self, stream: str, text: str) -> None:
+        self.stream = stream
+        self._text = text
 
-    def ack(self) -> FakeExecResult:
-        self.acked += 1
-        return self.result
+    def text(self) -> str:
+        return self._text
 
-    def kill(self) -> bool:
-        self.killed += 1
-        return True
 
-    def stream(self, **_: Any) -> Any:
-        assert self.events is not None, "stream() called without scripted events"
-        yield from self.events
+class FakeKeepAwake:
+    """Tracks whether the provider stops its trial-wide keepalive."""
+
+    def __init__(self) -> None:
+        self.stopped = 0
+        self.error: Exception | None = None
+
+    def stop(self) -> None:
+        self.stopped += 1
+        if self.error:
+            raise self.error
 
 
 class FakeSession:
-    """Answers ``run`` through ``responder(command, kwargs) -> FakeExecResult``."""
+    """Records completion and file operations without executing a command."""
 
     def __init__(self) -> None:
         self.runs: list[dict[str, Any]] = []
-        self.handles: list[FakeHandle] = []
         self.responder: Callable[[str, dict[str, Any]], FakeExecResult] = lambda command, kwargs: FakeExecResult()
-        self.events: list[Any] | None = None
+        self.chunks: list[FakeChunk] = []
         self.uploaded_files: list[dict[str, Any]] = []
         self.uploaded_tars: list[dict[str, Any]] = []
         self.files: dict[str, bytes] = {}
+        self.downloaded_files: list[str] = []
         self.tars: dict[str, bytes] = {}
-        self.ready_timeouts: list[float] = []
+        self.keep_awake_calls: list[dict[str, Any]] = []
+        self.keepalive = FakeKeepAwake()
 
-    def wait_until_ready(self, timeout: float) -> None:
-        self.ready_timeouts.append(timeout)
+    def run_to_completion(self, command: str, **kwargs: Any) -> FakeExecResult:
+        _validate_sdk_call(microvms.Session.run_to_completion, command, **kwargs)
+        self.runs.append({"command": command, **kwargs})
+        callback = kwargs.get("on_output")
+        if callback:
+            for chunk in self.chunks:
+                callback(chunk)
+        return self.responder(command, kwargs)
 
-    def run(self, command: str | list[str], **kwargs: Any) -> FakeHandle:
-        # The environment execs `["bash", "-c", script]`; record the script
-        # as ``command`` so assertions read the way the caller wrote it, and
-        # keep the raw argv for the one test that checks the wrapper itself.
-        script = command
-        if isinstance(command, list):
-            assert command[:2] == ["bash", "-c"] and len(command) == 3
-            script = command[2]
-        self.runs.append({"command": script, "argv": command, **kwargs})
-        handle = FakeHandle(self.responder(script, kwargs), self.events)  # type: ignore[arg-type]
-        self.handles.append(handle)
-        return handle
+    def keep_awake(self, **kwargs: Any) -> FakeKeepAwake:
+        _validate_sdk_call(microvms.Session.keep_awake, **kwargs)
+        self.keep_awake_calls.append(kwargs)
+        return self.keepalive
 
     def upload_file(self, path: str, data: bytes, *, mode: str | None = None) -> None:
         self.uploaded_files.append({"path": path, "data": data, "mode": mode})
@@ -206,6 +162,7 @@ class FakeSession:
         self.uploaded_tars.append({"remote": remote, "archive": archive})
 
     def download_file(self, path: str) -> bytes:
+        self.downloaded_files.append(path)
         if path not in self.files:
             raise _protocol_not_found()
         return self.files[path]
@@ -223,47 +180,74 @@ def _protocol_not_found() -> Exception:
 
 
 class FakeImage:
-    def __init__(self, identifier: str, version: str = "1.0") -> None:
-        self.identifier = identifier
-        self.version = version
+    """One image returned by SDK ensure_image."""
+
+    def __init__(self, name: str = "harbor-my-task-abcdef012345") -> None:
+        self.name = name
+        self.identifier = f"arn:aws:lambda:{REGION}:{ACCOUNT}:microvm-image:{name}"
+        self.version = "3.0"
 
 
 class FakeReport:
-    def __init__(self, *, leaked: bool = False) -> None:
+    """The externally observable teardown report."""
+
+    def __init__(
+        self,
+        *,
+        leaked: bool = False,
+        failures: list[str] | None = None,
+        undeleted: list[str] | None = None,
+        lifecycle: str = "TERMINATED",
+    ) -> None:
         self.leaked = leaked
-        self.undeleted = ["log-group"] if leaked else []
-        self.failures: list[str] = []
+        self.undeleted = undeleted or []
+        self.failures = failures or []
+        self.lifecycle = lifecycle
 
 
 class FakeSandbox:
-    def __init__(self, *, build_error: Exception | None = None) -> None:
-        self.build_calls: list[dict[str, Any]] = []
+    """Records SDK lifecycle calls, checking their installed argument signatures."""
+
+    def __init__(self) -> None:
+        self.ensure_calls: list[dict[str, Any]] = []
         self.run_calls: list[dict[str, Any]] = []
-        self.build_error = build_error
+        self.terminate_calls: list[dict[str, Any]] = []
+        self.build_error: Exception | None = None
         self.microvm_id: str | None = None
         self.endpoint: str | None = None
         self.session = FakeSession()
+        self.image = FakeImage()
+        self.warnings: list[str] = []
         self.terminated = 0
         self.suspended = 0
         self.report = FakeReport()
+        self.worker_threads: list[int] = []
 
-    def build_image(self, **kwargs: Any) -> FakeImage:
-        self.build_calls.append(kwargs)
-        if self.build_error is not None:
+    def ensure_image(self, **kwargs: Any) -> SimpleNamespace:
+        _validate_sdk_call(microvms.Sandbox.ensure_image, **kwargs)
+        self.worker_threads.append(threading.get_ident())
+        self.ensure_calls.append(kwargs)
+        if self.build_error:
             raise self.build_error
-        return FakeImage(f"arn:aws:lambda:{REGION}:{ACCOUNT}:microvm-image:{kwargs['name']}")
+        return SimpleNamespace(image=self.image, warnings=self.warnings, reused=False)
 
     def run(self, **kwargs: Any) -> FakeSession:
+        _validate_sdk_call(microvms.Sandbox.run, **kwargs)
+        self.worker_threads.append(threading.get_ident())
         self.run_calls.append(kwargs)
         self.microvm_id = "mvm-123"
         self.endpoint = "mvm-123.example.aws"
         return self.session
 
-    def terminate(self) -> FakeReport:
+    def terminate(self, **kwargs: Any) -> FakeReport:
+        _validate_sdk_call(microvms.Sandbox.terminate, **kwargs)
+        self.worker_threads.append(threading.get_ident())
+        self.terminate_calls.append(kwargs)
         self.terminated += 1
         return self.report
 
     def suspend(self) -> str:
+        self.worker_threads.append(threading.get_ident())
         self.suspended += 1
         return "SUSPENDED"
 
@@ -322,12 +306,10 @@ def _make_env(
     )
 
 
-def _wire(env: LambdaMicrovmsEnvironment) -> tuple[FakeBotoSession, FakeSandbox]:
-    boto = FakeBotoSession()
+def _wire(env: LambdaMicrovmsEnvironment) -> FakeSandbox:
     sandbox = FakeSandbox()
-    env._boto_session = boto
     env._sandbox = sandbox
-    return boto, sandbox
+    return sandbox
 
 
 def _wire_session(env: LambdaMicrovmsEnvironment) -> FakeSession:
@@ -411,7 +393,7 @@ def test_idle_defaults_to_the_duration_ceiling(tmp_path: Path, agentd_path: Path
 
 def test_capabilities(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
     env = _make_env(tmp_path, agentd_path)
-    assert env.capabilities.disable_internet is True
+    assert env.capabilities.disable_internet is False
     assert env.capabilities.network_allowlist is False
     assert env.capabilities.docker_compose is False
     caps = LambdaMicrovmsEnvironment.resource_capabilities()
@@ -419,18 +401,12 @@ def test_capabilities(tmp_path: Path, agentd_path: Path, microvm_env: None) -> N
     assert not caps.cpu_limit and not caps.memory_limit
 
 
-def test_no_network_accepted_allowlist_rejected(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    _make_env(
-        tmp_path,
-        agentd_path,
-        network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
-    )
-    with pytest.raises(ValueError, match="allowlist"):
-        _make_env(
-            tmp_path,
-            agentd_path,
-            network_policy=NetworkPolicy(network_mode=NetworkMode.ALLOWLIST, allowed_hosts=["pypi.org"]),
-        )
+@pytest.mark.parametrize("mode", [NetworkMode.NO_NETWORK, NetworkMode.ALLOWLIST])
+def test_unenforceable_network_policies_are_rejected(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, mode: NetworkMode
+) -> None:
+    with pytest.raises(ValueError, match="[Nn]etwork|no-network|allowlist"):
+        _make_env(tmp_path, agentd_path, network_policy=NetworkPolicy(network_mode=mode, allowed_hosts=["pypi.org"]))
 
 
 def test_compose_tasks_are_rejected(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
@@ -490,9 +466,6 @@ def test_preflight_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     LambdaMicrovmsEnvironment.preflight()
 
 
-# ── image definition ───────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     ("cpus", "memory_mb", "expected_mib"),
     [
@@ -522,14 +495,14 @@ def test_size_class_covers_the_request(
 
 def test_size_class_over_the_largest_is_rejected(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
     env = _make_env(tmp_path, agentd_path, task_env_config=EnvironmentConfig(memory_mb=16_384))
-    with pytest.raises(ValueError, match="largest"):
+    with pytest.raises(microvms.InvalidArgError, match="largest"):
         env.size_class()
 
 
 def test_harness_dockerfile_appends_daemon_stanza(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path, dockerfile="FROM python:3.12-slim\nRUN pip install x")
+    env = _make_env(tmp_path, agentd_path, dockerfile="FROM python:3.12-slim\nRUN pip install x\nUSER nobody")
     text = env.harness_dockerfile()
-    assert text.startswith("FROM python:3.12-slim\nRUN pip install x\n")
+    assert text.startswith("FROM python:3.12-slim\nRUN pip install x\nUSER nobody\n")
     assert "USER root\n" in text
     assert "COPY agentd /agentd\n" in text
     assert "ENV AGENTD_PORT=9000\n" in text
@@ -557,8 +530,6 @@ def test_base_image_pairs_with_the_task_from(tmp_path: Path, agentd_path: Path, 
     assert base.name == "al2023-1"
     assert base.docker_ref == "ubuntu:24.04"
     assert base.working_dir == "/work"
-    assert lm.dockerfile_from_ref("# comment\nfrom   alpine:3\n") == "alpine:3"
-    assert lm.dockerfile_from_ref("RUN true\n") is None
 
 
 def test_base_image_uses_managed_al2023_when_from_matches(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
@@ -567,593 +538,397 @@ def test_base_image_uses_managed_al2023_when_from_matches(tmp_path: Path, agentd
     assert env.base_image().docker_ref == managed.docker_ref
     pinned = f"FROM {managed.docker_ref}@sha256:{'a' * 64}\n"
     env = _make_env(tmp_path, agentd_path, dockerfile=pinned)
-    assert env.base_image().docker_ref == managed.docker_ref
+    assert env.base_image().docker_ref == f"{managed.docker_ref}@sha256:{'a' * 64}"
 
 
-def test_image_name_is_content_addressed_and_valid(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+# ── SDK image preparation ──────────────────────────────────────────────
+
+
+def test_provision_agentd_delegates_and_caches_override(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Path | None] = []
+
+    def provision_agentd(*, binary: Path | None = None) -> bytes:
+        calls.append(binary)
+        return b"verified agentd"
+
+    monkeypatch.setattr(microvms, "provision_agentd", provision_agentd)
     env = _make_env(tmp_path, agentd_path)
-    name = env.image_name
-    assert name.startswith("harbor-my-task-")
-    assert len(name) <= 64
-    assert lm.re.fullmatch(r"[a-zA-Z0-9_-]+", name)
-    assert env.image_name == name  # stable across calls
-
-    other_agentd = tmp_path / "agentd2"
-    other_agentd.write_bytes(fake_aarch64_elf(b"different daemon"))
-    assert _make_env(tmp_path, other_agentd).image_name != name
-
-    bigger = _make_env(tmp_path, agentd_path, task_env_config=EnvironmentConfig(memory_mb=4096))
-    assert bigger.image_name != name
-
-    explicit = _make_env(tmp_path, agentd_path, image_name="pinned-image")
-    assert explicit.image_name == "pinned-image"
+    assert env._load_agentd() == b"verified agentd"
+    assert env._load_agentd() == b"verified agentd"
+    assert calls == [agentd_path]
 
 
-def test_sanitize_image_name() -> None:
-    assert lm.sanitize_image_name("org/task.v2") == "org-task-v2"
-    long = lm.sanitize_image_name("x" * 100)
-    assert len(long) <= 64 and lm.re.fullmatch(r"[a-zA-Z0-9_-]+", long)
-    assert lm.sanitize_image_name("///") == "harbor"
+@pytest.mark.parametrize("force", [False, True])
+async def test_ensure_image_delegates_build_and_cache_policy(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, force: bool
+) -> None:
+    env = _make_env(tmp_path, agentd_path, task_env_config=EnvironmentConfig(cpus=2, memory_mb=4096))
+    sandbox = _wire(env)
+    assert await env._ensure_image(force_build=force) == (sandbox.image.identifier, "3.0")
+    [call] = sandbox.ensure_calls
+    assert call["name_prefix"] == "harbor-my-task"
+    assert call["binary"] == agentd_path.read_bytes()
+    assert call["dockerfile"] == microvms.wrap_dockerfile("FROM ubuntu:24.04\nWORKDIR /app\n")
+    assert call["context_dir"] == str(tmp_path / "environment")
+    assert call["s3_bucket"] == BUCKET
+    assert call["s3_key_prefix"] == "harbor/lambda-microvms"
+    assert call["build_role_arn"] == BUILD_ROLE
+    assert call["size"].baseline_mib == 4096
+    assert call["base_image"].docker_ref == "ubuntu:24.04"
+    assert call["base_image"].working_dir == "/app"
+    assert call["force"] is force
+    assert call["wait_timeout"] == float(env.task_env_config.build_timeout_sec)
+    assert call["tags"]["harbor:environment"] == "lambda-microvms"
+    assert env.image_name == sandbox.image.name
+    await env.stop(delete=True)
 
 
-def test_build_artifact_carries_context_and_executable_daemon(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(
-        tmp_path,
-        agentd_path,
-        dockerfile="FROM ubuntu:24.04\nCOPY tests/ /tests/\n",
-        extra_files={
-            "tests/test_outputs.py": "assert True\n",
-            "__pycache__/x.pyc": "junk",
-        },
-    )
-    (tmp_path / "environment" / "link").symlink_to(tmp_path / "environment" / "Dockerfile")
-    with zipfile.ZipFile(io.BytesIO(env.build_artifact())) as archive:
-        names = archive.namelist()
-        assert names[:2] == ["Dockerfile", "agentd"]
-        assert "tests/test_outputs.py" in names
-        assert "link" not in names
-        assert not any(n.startswith("__pycache__") for n in names)
-        assert archive.read("Dockerfile").decode() == env.harness_dockerfile()
-        assert archive.read("agentd") == fake_aarch64_elf()
-        assert (archive.getinfo("agentd").external_attr >> 16) & 0o777 == 0o755
-
-
-def test_build_artifact_refuses_a_task_file_named_agentd(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path, extra_files={"agentd": "not the daemon"})
-    with pytest.raises(ValueError, match="collides"):
-        env.build_artifact()
-
-
-def test_prebuilt_artifact_has_no_context(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+async def test_ensure_prebuilt_image_excludes_task_context(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
     env = _make_env(
         tmp_path,
         agentd_path,
         dockerfile=None,
-        extra_files={"data.txt": "uploaded after start instead"},
+        extra_files={"data.txt": "not build context"},
         task_env_config=EnvironmentConfig(docker_image="ghcr.io/org/task:1"),
     )
-    with zipfile.ZipFile(io.BytesIO(env.build_artifact())) as archive:
-        assert archive.namelist() == ["Dockerfile", "agentd"]
-
-
-def test_agentd_binary_must_be_aarch64(tmp_path: Path, microvm_env: None) -> None:
-    bad = tmp_path / "agentd-x86"
-    bad.write_bytes(fake_x86_elf())
-    env = _make_env(tmp_path, bad)
-    with pytest.raises(ValueError, match="aarch64"):
-        env.build_artifact()
-    with pytest.raises(ValueError, match="not an ELF"):
-        lm.require_aarch64_elf(b"#!/bin/sh\n", source="script")
-
-
-def test_agentd_binary_downloaded_to_cache(tmp_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-
-    def fake_get(url: str, **_: Any) -> Any:
-        calls.append(url)
-        return SimpleNamespace(content=fake_aarch64_elf(), raise_for_status=lambda: None)
-
-    monkeypatch.setattr(lm.httpx, "get", fake_get)
-    monkeypatch.setattr(lm.platformdirs, "user_cache_path", lambda _: tmp_path / "cache")
-    env = _make_env(tmp_path, tmp_path / "unused", agentd_binary=None)
-    assert env._load_agentd() == fake_aarch64_elf()
-    assert calls == [f"https://github.com/theagenticguy/microvms-agentd/releases/download/v{microvms.core_version()}/agentd"]
-    # Second environment reads the cache instead of downloading again.
-    _make_env(tmp_path, tmp_path / "unused", agentd_binary=None)._load_agentd()
-    assert len(calls) == 1
-
-
-# ── image lifecycle ────────────────────────────────────────────────────
-
-
-def _arn(env: LambdaMicrovmsEnvironment) -> str:
-    return f"arn:aws:lambda:{REGION}:{ACCOUNT}:microvm-image:{env.image_name}"
-
-
-async def test_ensure_image_reuses_an_active_image(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    boto, sandbox = _wire(env)
-    boto.api.images[_arn(env)] = {"state": "CREATED", "latestActiveImageVersion": "2.0"}
-
-    assert await env._ensure_image(force_build=False) == (_arn(env), "2.0")
-    assert sandbox.build_calls == []
-    assert boto.s3.puts == []
-
-
-async def test_ensure_image_builds_through_the_bindings(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(
-        tmp_path,
-        agentd_path,
-        dockerfile="FROM ubuntu:24.04\nWORKDIR /app\n",
-        task_env_config=EnvironmentConfig(cpus=2, memory_mb=4096),
-    )
-    boto, sandbox = _wire(env)
-
-    arn, version = await env._ensure_image(force_build=False)
-
-    assert (arn, version) == (_arn(env), "1.0")
-    [put] = boto.s3.puts
-    assert put["Bucket"] == BUCKET
-    assert put["Key"] == f"harbor/lambda-microvms/{env.image_name}/artifact.zip"
-    [call] = sandbox.build_calls
-    assert call["name"] == env.image_name
-    assert call["binary"] == fake_aarch64_elf()
-    assert call["code_artifact_uri"] == f"s3://{BUCKET}/{put['Key']}"
-    assert call["build_role_arn"] == BUILD_ROLE
-    assert call["size"].baseline_mib == 4096
-    assert call["base_image"].docker_ref == "ubuntu:24.04"
-    assert call["dockerfile"] == env.harness_dockerfile()
-    assert call["tags"]["harbor:environment"] == "lambda-microvms"
-
-
-async def test_ensure_image_waits_on_a_concurrent_build(
-    tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    boto, sandbox = _wire(env)
-    monkeypatch.setattr(lm, "_IMAGE_POLL_INTERVAL_SEC", 0.0)
-    boto.api.images[_arn(env)] = {"state": "CREATING"}
-
-    async def flip_to_created(*_: Any, **__: Any) -> None:
-        boto.api.images[_arn(env)] = {
-            "state": "CREATED",
-            "latestActiveImageVersion": "1.0",
-        }
-
-    monkeypatch.setattr(lm.asyncio, "sleep", flip_to_created)
-    assert await env._ensure_image(force_build=False) == (_arn(env), "1.0")
-    assert sandbox.build_calls == []
-
-
-async def test_ensure_image_lost_create_race_waits_for_winner(
-    tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    boto, sandbox = _wire(env)
-    sandbox.build_error = microvms.PlatformError("ConflictException: exists")
-    monkeypatch.setattr(lm, "_IMAGE_POLL_INTERVAL_SEC", 0.0)
-
-    real_build = sandbox.build_image
-
-    def losing_build(**kwargs: Any) -> FakeImage:
-        # The winner's image appears before our refusal is examined.
-        boto.api.images[_arn(env)] = {
-            "state": "CREATED",
-            "latestActiveImageVersion": "1.0",
-        }
-        return real_build(**kwargs)
-
-    sandbox.build_image = losing_build  # type: ignore[method-assign]
-    assert await env._ensure_image(force_build=False) == (_arn(env), "1.0")
-
-
-async def test_ensure_image_build_failure_without_image_raises(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    _, sandbox = _wire(env)
-    sandbox.build_error = microvms.PlatformError("AccessDenied")
-    with pytest.raises(RuntimeError, match="AccessDenied"):
-        await env._ensure_image(force_build=False)
-
-
-async def test_ensure_image_force_build_deletes_first(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    boto, sandbox = _wire(env)
-    boto.api.images[_arn(env)] = {"state": "CREATED", "latestActiveImageVersion": "1.0"}
-
-    await env._ensure_image(force_build=True)
-
-    assert boto.api.deleted == [_arn(env)]
-    assert len(sandbox.build_calls) == 1
-
-
-async def test_ensure_image_failed_image_is_rebuilt(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    boto, sandbox = _wire(env)
-    boto.api.images[_arn(env)] = {"state": "CREATE_FAILED"}
-
+    sandbox = _wire(env)
     await env._ensure_image(force_build=False)
+    assert sandbox.ensure_calls[0]["context_dir"] is None
+    assert sandbox.ensure_calls[0]["dockerfile"].startswith("FROM ghcr.io/org/task:1\n")
+    await env.stop(delete=True)
 
-    assert boto.api.deleted == [_arn(env)]
-    assert len(sandbox.build_calls) == 1
 
-
-async def test_wait_for_image_reports_a_failed_build(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+async def test_ensure_image_surfaces_sdk_context_warnings(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, caplog: pytest.LogCaptureFixture
+) -> None:
     env = _make_env(tmp_path, agentd_path)
-    boto, _ = _wire(env)
-    boto.api.images[_arn(env)] = {
-        "state": "CREATE_FAILED",
-        "stateReason": "hooks timed out",
-    }
-    with pytest.raises(RuntimeError, match="hooks timed out"):
-        await env._wait_for_image(_arn(env))
+    sandbox = _wire(env)
+    sandbox.warnings = ["Skipping symlink assets/link"]
+    with caplog.at_level("WARNING"):
+        await env._ensure_image(force_build=False)
+    assert "Skipping symlink assets/link" in caplog.text
+    await env.stop(delete=True)
 
 
-# ── start / stop ───────────────────────────────────────────────────────
+def test_image_prefix_reserves_sdk_hash_and_legacy_alias_warns(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    env = _make_env(tmp_path, agentd_path, image_name_prefix="org/task." + "x" * 100)
+    assert len(env.image_name_prefix) <= 51
+    assert lm.re.fullmatch(r"[a-zA-Z0-9_-]+", env.image_name_prefix)
+    with caplog.at_level("WARNING"):
+        legacy = _make_env(tmp_path, agentd_path, image_name="old-image")
+    assert legacy.image_name_prefix == "old-image"
+    assert "content hash" in caplog.text and "deprecated" in caplog.text
+    with pytest.raises(ValueError, match="image_name_prefix"):
+        _make_env(tmp_path, agentd_path, image_name="old", image_name_prefix="new")
 
 
-def _responder(passwd: str = "agent:x:1000:1000::/home/agent:/bin/bash") -> Callable[[str, dict[str, Any]], FakeExecResult]:
-    def respond(command: str, kwargs: dict[str, Any]) -> FakeExecResult:
-        if "/proc/$PPID/environ" in command:
-            return FakeExecResult(stdout="PATH=/opt/venv/bin:/usr/bin\nAGENTD_PORT=9000\nFOO=bar\n")
-        if "/etc/passwd" in command:
-            for row in passwd.splitlines():
-                name, _, uid, gid, _, home, _ = row.split(":")
-                if f"= {name} ]" in command or f"= {uid} ]" in command:
-                    return FakeExecResult(stdout=f"{name}:{uid}:{gid}:{home}\n")
-            return FakeExecResult(exit_code=1)
-        return FakeExecResult(stdout="ok\n")
-
-    return respond
+def test_sdk_rejects_incomplete_task_dockerfile(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+    env = _make_env(tmp_path, agentd_path, dockerfile="FROM ubuntu:24.04\nRUN echo trailing \\\n")
+    with pytest.raises(microvms.InvalidArgError):
+        env.harness_dockerfile()
 
 
-async def test_start_builds_launches_and_prepares_dirs(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(
-        tmp_path,
-        agentd_path,
-        network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
-        execution_role_arn="arn:aws:iam::1:role/exec",
-        max_duration_sec=7200,
-    )
-    boto, sandbox = _wire(env)
-    boto.api.images[_arn(env)] = {"state": "CREATED", "latestActiveImageVersion": "3.0"}
-    sandbox.session.responder = _responder()
+# ── VM lifecycle and cancellation ──────────────────────────────────────
 
+
+async def test_start_launches_prepares_dirs_and_keeps_entire_trial_awake(
+    tmp_path: Path, agentd_path: Path, microvm_env: None
+) -> None:
+    env = _make_env(tmp_path, agentd_path, execution_role_arn="arn:aws:iam::1:role/exec", max_duration_sec=7200)
+    sandbox = _wire(env)
     await env.start(force_build=False)
-
     [launch] = sandbox.run_calls
-    assert launch["image_identifier"] == _arn(env)
+    assert launch["image_identifier"] == sandbox.image.identifier
     assert launch["image_version"] == "3.0"
-    assert launch["egress"] is False
+    assert launch["egress"] is True
     assert launch["execution_role_arn"] == "arn:aws:iam::1:role/exec"
     assert launch["max_duration_sec"] == 7200
     assert launch["max_idle_sec"] == 7200
     assert launch["token_scope"] == "my-task__abc123__env"
-    assert sandbox.session.ready_timeouts == [300.0]
-    # The image ENV was captured, minus the daemon's own knobs.
-    assert env._image_env == {"PATH": "/opt/venv/bin:/usr/bin", "FOO": "bar"}
-    mkdir_run = next(r for r in sandbox.session.runs if r["command"].startswith("mkdir -p"))
+    assert launch["ready_timeout"] == 300.0
+    assert sandbox.session.keep_awake_calls == [{"while_busy": False}]
+    mkdir_run = next(run for run in sandbox.session.runs if run["command"].startswith("mkdir -p"))
     assert str(EnvironmentPaths.agent_dir) in mkdir_run["command"]
     assert str(EnvironmentPaths.verifier_dir) in mkdir_run["command"]
-    assert mkdir_run["user"] is None  # root: the daemon's own user
+    assert mkdir_run["user"] == "root"
+    assert not any("/proc/" in run["command"] or "/etc/passwd" in run["command"] for run in sandbox.session.runs)
+    await env.stop(delete=True)
+    assert sandbox.session.keepalive.stopped == 1
+    assert sandbox.terminate_calls == [{"wait_for_terminated": True}]
+    assert len(set(sandbox.worker_threads)) == 1
+    assert sandbox.worker_threads[0] != threading.get_ident()
 
 
-async def test_start_public_network_requests_egress(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+@pytest.mark.parametrize("stage", ["launch", "prepare_dirs"])
+async def test_start_failure_terminates_vm(tmp_path: Path, agentd_path: Path, microvm_env: None, stage: str) -> None:
     env = _make_env(tmp_path, agentd_path)
-    boto, sandbox = _wire(env)
-    boto.api.images[_arn(env)] = {"state": "CREATED", "latestActiveImageVersion": "1.0"}
-    await env.start(force_build=False)
-    assert sandbox.run_calls[0]["egress"] is True
+    sandbox = _wire(env)
 
+    def fail_launch(**kwargs: Any) -> FakeSession:
+        sandbox.microvm_id = "mvm-partial"
+        raise microvms.LaunchDiedError("image hook timed out")
 
-async def test_start_launch_failure_is_reported(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    boto, sandbox = _wire(env)
-    boto.api.images[_arn(env)] = {"state": "CREATED", "latestActiveImageVersion": "1.0"}
+    def fail_command(command: str, kwargs: dict[str, Any]) -> FakeExecResult:
+        raise microvms.RetryableError("directory preparation failed")
 
-    def dying_run(**_: Any) -> FakeSession:
-        raise microvms.LaunchDiedError("stateReason: image hook timed out")
-
-    sandbox.run = dying_run  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError, match="hook timed out"):
+    if stage == "launch":
+        sandbox.run = fail_launch  # type: ignore[method-assign]
+    else:
+        sandbox.session.responder = fail_command
+    with pytest.raises((microvms.LaunchDiedError, RuntimeError), match="failed|timed out"):
         await env.start(force_build=False)
+    assert sandbox.terminated == 1
+    assert env._sandbox is None and env._session is None
+    assert sandbox.session.keepalive.stopped == (0 if stage == "launch" else 1)
 
 
-async def test_stop_delete_terminates_and_reports_leaks(
+async def test_cancelled_launch_waits_for_allocation_before_teardown(
+    tmp_path: Path, agentd_path: Path, microvm_env: None
+) -> None:
+    env = _make_env(tmp_path, agentd_path)
+    sandbox = _wire(env)
+    entered, release = threading.Event(), threading.Event()
+    original_run = sandbox.run
+
+    def slow_run(**kwargs: Any) -> FakeSession:
+        entered.set()
+        assert release.wait(timeout=5), "test did not release the launch worker"
+        return original_run(**kwargs)
+
+    sandbox.run = slow_run  # type: ignore[method-assign]
+    task = asyncio.create_task(env.start(force_build=False))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        release.set()
+    assert sandbox.microvm_id == "mvm-123"
+    assert sandbox.terminated == 1
+    assert env._sandbox is None and env._session is None
+    assert len(set(sandbox.worker_threads)) == 1
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        FakeReport(leaked=True),
+        FakeReport(failures=["terminate denied"]),
+        FakeReport(undeleted=["mvm-123"]),
+        FakeReport(lifecycle="TERMINATING"),
+    ],
+)
+async def test_failed_teardown_retains_handle_for_retry(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, report: FakeReport
+) -> None:
+    env = _make_env(tmp_path, agentd_path)
+    sandbox = _wire(env)
+    sandbox.run()
+    sandbox.report = report
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        await env.stop(delete=True)
+    assert env._sandbox is sandbox and env._session is None
+    sandbox.report = FakeReport()
+    await env.stop(delete=True)
+    assert sandbox.terminated == 2
+    assert env._sandbox is None
+
+
+async def test_stop_without_delete_suspends_and_can_later_delete(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+    env = _make_env(tmp_path, agentd_path)
+    sandbox = _wire(env)
+    await env.start(force_build=False)
+    await env.stop(delete=False)
+    assert sandbox.suspended == 1 and sandbox.terminated == 0
+    assert sandbox.session.keepalive.stopped == 1
+    assert env._sandbox is sandbox and env._session is None
+    await env.stop(delete=True)
+    assert sandbox.terminated == 1
+
+
+async def test_stop_without_launch_does_not_construct_sdk_sandbox(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> object:
+        pytest.fail("stop constructed a real AWS sandbox")
+
+    monkeypatch.setattr(microvms, "Sandbox", refuse)
+    await _make_env(tmp_path, agentd_path).stop(delete=True)
+
+
+async def test_keepalive_failure_still_terminates_vm(
     tmp_path: Path, agentd_path: Path, microvm_env: None, caplog: pytest.LogCaptureFixture
 ) -> None:
     env = _make_env(tmp_path, agentd_path)
-    _, sandbox = _wire(env)
-    sandbox.run()
-    env._session = sandbox.session
-    sandbox.report = FakeReport(leaked=True)
-
+    sandbox = _wire(env)
+    await env.start(force_build=False)
+    sandbox.session.keepalive.error = microvms.RetryableError("health poll failed")
     with caplog.at_level("WARNING"):
         await env.stop(delete=True)
-
     assert sandbox.terminated == 1
-    assert env._sandbox is None and env._session is None
-    assert "log-group" in caplog.text
+    assert "health poll failed" in caplog.text
 
 
-async def test_stop_without_delete_suspends(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    _, sandbox = _wire(env)
-    sandbox.run()
-    await env.stop(delete=False)
-    assert sandbox.suspended == 1 and sandbox.terminated == 0
-
-
-async def test_stop_before_launch_is_a_noop(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    _, sandbox = _wire(env)
-    await env.stop(delete=True)
-    assert sandbox.terminated == 0
-
-
-# ── exec ───────────────────────────────────────────────────────────────
+# ── SDK completion and Harbor overlays ─────────────────────────────────
 
 
 async def test_exec_requires_start(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
     env = _make_env(tmp_path, agentd_path)
-    with pytest.raises(RuntimeError, match="start()"):
+    with pytest.raises(RuntimeError, match="start\\(\\)"):
         await env.exec("true")
 
 
-async def test_exec_runs_a_shell_script_with_layered_env(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(
-        tmp_path,
-        agentd_path,
-        dockerfile="FROM ubuntu:24.04\nWORKDIR /app\n",
-        task_env_config=EnvironmentConfig(env={"TASK": "t"}),
-        persistent_env={"RUN": "r"},
-    )
+async def test_exec_delegates_native_environment_user_and_shell_handling(
+    tmp_path: Path, agentd_path: Path, microvm_env: None
+) -> None:
+    env = _make_env(tmp_path, agentd_path, task_env_config=EnvironmentConfig(env={"TASK": "t"}), persistent_env={"RUN": "r"})
     session = _wire_session(env)
-    session.responder = _responder()
-    env._image_env = {"PATH": "/opt/venv/bin:/usr/bin", "HOME": "/root"}
-
-    with env.scoped_exec_env({"SCOPED": "s"}):
-        result = await env.exec("echo hi", env={"TASK": "override"}, timeout_sec=30)
-
+    session.responder = lambda command, kwargs: FakeExecResult(stdout="ok\n")
+    with env.scoped_exec_env({"SCOPED": "s", "TASK": "scoped"}):
+        result = await env.exec("echo hi", env={"TASK": "per-command"}, timeout_sec=30)
     assert result == ExecResult(stdout="ok\n", stderr=None, return_code=0)
     [run] = session.runs
     assert run["command"] == "echo hi"
-    assert run["argv"] == ["bash", "-c", "echo hi"]
-    assert run["shell"] is False
+    assert run["shell"] == "bash" and run["inherit_image_env"] is True
     assert run["cwd"] == "/app"
-    assert run["user"] is None and run["group"] is None
+    assert run["user"] == "root"
     assert run["timeout_sec"] == 30.0
-    assert len(run["exec_id"]) == 32
-    assert run["env"] == {
-        "PATH": "/opt/venv/bin:/usr/bin",
-        "HOME": "/root",
-        "USER": "root",
-        "LOGNAME": "root",
-        "TASK": "override",
-        "RUN": "r",
-        "SCOPED": "s",
-    }
-    assert session.handles[0].wait_timeouts == [90.0]
+    assert uuid.UUID(run["exec_id"]).version == 4
+    assert run["env"] == {"TASK": "scoped", "RUN": "r", "SCOPED": "s"}
+    assert run["on_output"] is None
 
 
 async def test_exec_cwd_precedence(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(
-        tmp_path,
-        agentd_path,
-        dockerfile="FROM ubuntu:24.04\nWORKDIR /app\n",
-        task_env_config=EnvironmentConfig(workdir="/cfg"),
-    )
+    env = _make_env(tmp_path, agentd_path, task_env_config=EnvironmentConfig(workdir="/cfg"))
     session = _wire_session(env)
     await env.exec("true")
     await env.exec("true", cwd="/explicit")
-    assert [r["cwd"] for r in session.runs] == ["/cfg", "/explicit"]
-
+    assert [run["cwd"] for run in session.runs] == ["/cfg", "/explicit"]
     bare = _make_env(tmp_path, agentd_path, dockerfile="FROM ubuntu:24.04\n")
     bare_session = _wire_session(bare)
     await bare.exec("true")
-    assert bare_session.runs[0]["cwd"] is None  # inherit the image WORKDIR
+    assert bare_session.runs[0]["cwd"] is None
 
 
-async def test_exec_resolves_user_names_to_uids_once(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+async def test_exec_preserves_default_user_and_numeric_primary_group(
+    tmp_path: Path, agentd_path: Path, microvm_env: None
+) -> None:
     env = _make_env(tmp_path, agentd_path)
     session = _wire_session(env)
-    session.responder = _responder()
-    env._image_env = {"PATH": "/usr/bin", "HOME": "/root"}
-
-    await env.exec("whoami", user="agent")
-    await env.exec("whoami", user="agent")
+    session.files["/etc/passwd"] = b"root:x:0:0::/root:/bin/bash\nagent:x:1000:1001::/home/agent:/bin/bash\n"
+    with env.with_default_user("agent"):
+        await env.exec("id")
+        await env.exec("id", user=0)
     with env.with_default_user(1000):
-        await env.exec("whoami")
-
-    lookups = [r for r in session.runs if "/etc/passwd" in r["command"]]
-    assert len(lookups) == 2  # one per distinct key ("agent", "1000")
-    assert lookups[0]["user"] is None  # the lookup itself runs as the daemon
-    demoted = [r for r in session.runs if r["command"] == "whoami"]
-    assert all(r["user"] == 1000 and r["group"] == 1000 for r in demoted)
-    assert demoted[0]["env"]["HOME"] == "/home/agent"
-    assert demoted[0]["env"]["USER"] == "agent"
-
-
-async def test_exec_root_runs_as_the_daemon(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    session = _wire_session(env)
-    await env.exec("id", user="root")
-    await env.exec("id", user=0)
-    assert all(r["user"] is None for r in session.runs)
-    assert all("/etc/passwd" not in r["command"] for r in session.runs)
-
-
-async def test_exec_numeric_uid_without_passwd_row(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    session = _wire_session(env)
-    session.responder = _responder(passwd="")
-    await env.exec("id", user=4242)
-    run = session.runs[-1]
-    assert run["user"] == 4242 and run["group"] is None
-    assert run["env"]["USER"] == "4242"
-
-
-async def test_exec_unknown_user_name_is_an_error(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    session = _wire_session(env)
-    session.responder = _responder(passwd="")
-    with pytest.raises(ValueError, match="Unknown user"):
-        await env.exec("id", user="ghost")
+        await env.exec("id")
+        await env.exec("id", user=4242)
+    assert [run["user"] for run in session.runs] == ["agent", 0, 1000, 4242]
+    assert [run["group"] for run in session.runs] == [None, 0, 1001, None]
+    assert all(run["inherit_image_env"] for run in session.runs)
 
 
 @pytest.mark.parametrize(
-    ("fake", "timeout_sec", "expected_code", "stderr_contains"),
+    ("result", "timeout", "code", "note"),
     [
-        (FakeExecResult(exit_code=3, stderr="bad"), None, 3, "bad"),
-        (FakeExecResult(exit_code=None, signal=15), 10, 124, "timed out after 10"),
-        (FakeExecResult(exit_code=None, signal=9), 10, 124, "timed out"),
-        (FakeExecResult(exit_code=None, signal=15), None, 143, None),
-        (FakeExecResult(exit_code=None, signal=11), 10, 139, None),
-        (FakeExecResult(exit_code=0, truncated=True), None, 0, "truncated"),
+        (FakeExecResult(posix_exit_code=3, stderr="bad"), None, 3, "bad"),
+        (FakeExecResult(posix_exit_code=143), 10, 143, None),
+        (FakeExecResult(posix_exit_code=139), 10, 139, None),
+        (FakeExecResult(posix_exit_code=124, timed_out=True), 10, 124, "timed out after 10"),
+        (FakeExecResult(posix_exit_code=124, synthesized=True, notes=["output unknown"]), 5, 124, "output unknown"),
+        (FakeExecResult(notes=["output truncated", "writers may be alive"]), None, 0, "writers may be alive"),
+        (FakeExecResult(posix_exit_code=None), None, -1, None),
     ],
 )
-async def test_exec_result_mapping(
+async def test_exec_uses_sdk_outcome_and_notes(
     tmp_path: Path,
     agentd_path: Path,
     microvm_env: None,
-    fake: FakeExecResult,
-    timeout_sec: int | None,
-    expected_code: int,
-    stderr_contains: str | None,
+    result: FakeExecResult,
+    timeout: int | None,
+    code: int,
+    note: str | None,
 ) -> None:
     env = _make_env(tmp_path, agentd_path)
     session = _wire_session(env)
-    session.responder = lambda command, kwargs: fake
-    result = await env.exec("cmd", timeout_sec=timeout_sec)
-    assert result.return_code == expected_code
-    if stderr_contains is None:
-        assert result.stderr is None
+    session.responder = lambda command, kwargs: result
+    output = await env.exec("cmd", timeout_sec=timeout)
+    assert output.return_code == code
+    assert output.stdout is None
+    if note is None:
+        assert output.stderr is None
     else:
-        assert stderr_contains in (result.stderr or "")
+        assert note in (output.stderr or "")
+    for sdk_note in result.notes:
+        assert f"[microvms] {sdk_note}" in (output.stderr or "")
 
 
-async def test_exec_without_timeout_waits_up_to_the_ceiling(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    session = _wire_session(env)
-    await env.exec("sleep 1")
-    assert session.handles[0].wait_timeouts == [lm._EXEC_WAIT_CEILING_SEC]
-
-
-async def test_exec_client_timeout_kills_and_reports_124(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+async def test_exec_failure_is_reported(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
     env = _make_env(tmp_path, agentd_path)
     session = _wire_session(env)
 
-    class HangingHandle(FakeHandle):
-        def wait_and_ack(self, timeout: float) -> FakeExecResult:
-            self.wait_timeouts.append(timeout)
-            if len(self.wait_timeouts) == 1:
-                raise microvms.TimeoutError("client deadline")
-            return FakeExecResult(exit_code=None, signal=9, stdout="partial")
-
-    def run(command: str, **kwargs: Any) -> HangingHandle:
-        handle = HangingHandle(FakeExecResult())
-        session.handles.append(handle)
-        return handle
-
-    session.run = run  # type: ignore[assignment]
-    result = await env.exec("sleep 999", timeout_sec=5)
-    assert result.return_code == 124
-    assert result.stdout == "partial"
-    assert session.handles[0].killed == 1
-
-
-async def test_exec_start_failure_is_reported(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
-    env = _make_env(tmp_path, agentd_path)
-    session = _wire_session(env)
-
-    def failing_run(command: str, **kwargs: Any) -> FakeHandle:
+    def fail(command: str, kwargs: dict[str, Any]) -> FakeExecResult:
         raise microvms.RetryableError("503 not bootstrapped")
 
-    session.run = failing_run  # type: ignore[assignment]
-    with pytest.raises(RuntimeError, match="exec start failed"):
+    session.responder = fail
+    with pytest.raises(RuntimeError, match="exec failed.*503"):
         await env.exec("true")
 
 
-class FakeChunk:
-    def __init__(self, stream: str, data: bytes) -> None:
-        self.stream = stream
-        self.data = data
-
-    def text(self) -> str:
-        return self.data.decode("utf-8", "replace")
-
-
-class FakeExit:
-    pass
-
-
-class FakeGap:
-    pass
-
-
-def _patch_stream_types(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Proxy:
-        OutputChunk = FakeChunk
-        Exit = FakeExit
-
-        def __getattr__(self, name: str) -> Any:
-            return getattr(microvms, name)
-
-    monkeypatch.setattr(lm, "microvms", Proxy())
-
-
-async def test_exec_streams_output_to_the_callback(
-    tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _patch_stream_types(monkeypatch)
+async def test_exec_bridges_output_callback_to_event_loop(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
     env = _make_env(tmp_path, agentd_path)
     session = _wire_session(env)
-    session.responder = lambda c, k: FakeExecResult(stdout="line 1\nline 2\n", stderr="warn\n")
-    session.events = [
-        FakeChunk("stdout", b"line 1\n"),
-        FakeGap(),
-        FakeChunk("stderr", b"warn\n"),
-        FakeChunk("stdout", b"line 2\n"),
-        FakeExit(),
-    ]
+    session.chunks = [FakeChunk("stdout", "one\n"), FakeChunk("stderr", "warn\n"), FakeChunk("stdout", "two\n")]
+    session.responder = lambda command, kwargs: FakeExecResult(stdout="one\ntwo\n", stderr="warn\n")
     seen: list[tuple[str, str]] = []
+    callback_threads: list[int] = []
 
     async def callback(text: str, stream: str) -> None:
         seen.append((stream, text))
+        callback_threads.append(threading.get_ident())
 
     with env.scoped_output_callback(callback):
         result = await env.exec("cmd")
-
-    assert seen == [
-        ("stdout", "line 1\n"),
-        ("stderr", "warn\n"),
-        ("stdout", "line 2\n"),
-    ]
-    assert result.stdout == "line 1\nline 2\n"
-    handle = session.handles[0]
-    assert handle.acked == 1 and handle.wait_timeouts == []
+    assert seen == [("stdout", "one\n"), ("stderr", "warn\n"), ("stdout", "two\n")]
+    assert callback_threads == [threading.get_ident()] * 3
+    assert result.stdout == "one\ntwo\n" and result.stderr == "warn\n"
 
 
-async def test_exec_stream_without_exit_falls_back_to_polling(
-    tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
+async def test_cancelled_exec_terminates_vm_even_before_registration(
+    tmp_path: Path, agentd_path: Path, microvm_env: None
 ) -> None:
-    _patch_stream_types(monkeypatch)
     env = _make_env(tmp_path, agentd_path)
-    session = _wire_session(env)
-    session.responder = lambda c, k: FakeExecResult(stdout="all\n")
-    session.events = [FakeChunk("stdout", b"partial")]  # cut connection, no Exit
-    seen: list[str] = []
+    sandbox = _wire(env)
+    await env.start(force_build=False)
+    entered, release = threading.Event(), threading.Event()
+    completed = threading.Event()
 
-    async def callback(text: str, stream: str) -> None:
-        seen.append(text)
+    def delayed_registration(command: str, kwargs: dict[str, Any]) -> FakeExecResult:
+        entered.set()
+        try:
+            assert release.wait(timeout=5), "test did not release the exec worker"
+            return FakeExecResult()
+        finally:
+            completed.set()
 
-    with env.scoped_output_callback(callback):
-        result = await env.exec("cmd")
-
-    assert seen == ["partial"]
-    assert result.stdout == "all\n"
-    handle = session.handles[0]
-    assert handle.wait_timeouts == [lm._EXEC_WAIT_CEILING_SEC]
-    assert handle.acked == 1
+    sandbox.session.responder = delayed_registration
+    task = asyncio.create_task(env.exec("sleep 999"))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert sandbox.terminated == 1
+        assert env._session is None and env._sandbox is None
+    finally:
+        release.set()
+        assert await asyncio.to_thread(completed.wait, 5)
 
 
 # ── file transfer ──────────────────────────────────────────────────────
@@ -1239,9 +1014,47 @@ async def test_other_daemon_refusals_surface_as_runtime_errors(tmp_path: Path, a
         await env.upload_file(agentd_path, "/x")
 
 
-def test_parse_environ_drops_daemon_knobs() -> None:
-    assert lm.parse_environ("PATH=/bin\nAGENTD_PORT=9000\nEMPTY=\nnoequals\nA=b=c\n") == {
-        "PATH": "/bin",
-        "EMPTY": "",
-        "A": "b=c",
-    }
+async def test_numeric_primary_group_is_cached_per_uid(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+    env = _make_env(tmp_path, agentd_path)
+    session = _wire_session(env)
+    session.files["/etc/passwd"] = b"agent:x:1000:1001::/home/agent:/bin/bash\n"
+    await env.exec("id", user=1000)
+    await env.exec("id", user=1000)
+    assert [run["group"] for run in session.runs] == [1001, 1001]
+    assert session.downloaded_files == ["/etc/passwd"]
+
+
+async def test_stderr_preserves_command_newlines(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+    env = _make_env(tmp_path, agentd_path)
+    session = _wire_session(env)
+    session.responder = lambda command, kwargs: FakeExecResult(stderr="\noriginal\n")
+    result = await env.exec("cmd")
+    assert result.stderr == "\noriginal\n"
+
+
+async def test_cancelled_stop_finishes_shielded_teardown(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+    env = _make_env(tmp_path, agentd_path)
+    sandbox = _wire(env)
+    await env.start(force_build=False)
+    entered, release = threading.Event(), threading.Event()
+    original_terminate = sandbox.terminate
+
+    def delayed_terminate(**kwargs: Any) -> FakeReport:
+        entered.set()
+        assert release.wait(timeout=5), "test did not release the teardown worker"
+        return original_terminate(**kwargs)
+
+    sandbox.terminate = delayed_terminate  # type: ignore[method-assign]
+    task = asyncio.create_task(env.stop(delete=True))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        # The second stop waits for the shielded first stop's lock to clear.
+        await asyncio.wait_for(env.stop(delete=True), timeout=5)
+    finally:
+        release.set()
+    assert sandbox.terminated == 1
+    assert env._sandbox is None and env._session is None
