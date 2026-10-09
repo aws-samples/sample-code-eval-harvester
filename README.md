@@ -146,7 +146,7 @@ a network, and the running environment; without those it skips cleanly (exit 0).
 | [`man/`](man/) | Man pages for every verb — the same methodology prose the `--help` vends, pinned in sync by a test. |
 | `src/eval_harvest/` | The CLI package — zero runtime deps. `cli.py` dispatches the six verbs; `survey`/`forge`/`candidate` mine PRs; `rubric`/`riskmap` build artefacts; `emit`/`harbor`/`tomlw`/`verifier_tpl/` assemble the task; `seal`/`verify` enforce answer-absence; `dataset` aggregates the manifest. |
 | [`eval/`](eval/README.md) | The core-bet **eval harness** (Workstream G): runs a real agent against the finished CLI, scores datapoint quality with an aligned LLM judge, and reports pass rates + the go/no-go. Nothing in `src/` imports it. |
-| `harvest_env/` | The packaged `harvest-env` distribution — the Lambda MicroVMs execution environment for Harbor (one Firecracker-isolated microVM per trial). The project's own code (MIT-0), loaded into an unmodified `harbor==0.22.0` by import path (no fork). |
+| `harvest_env/` | The packaged [`harvest-env` provider](harvest_env/README.md), one Lambda MicroVM per trial, driven by `microvms==0.11.0` and loaded into unmodified `harbor==0.22.0` by import path. Supports public-network tasks; rejects network-isolation requirements. |
 | [`docs/features/pr-eval-harvest/`](docs/features/pr-eval-harvest/) | The design: [`prd.md`](docs/features/pr-eval-harvest/prd.md) (scope), [`tech-plan.md`](docs/features/pr-eval-harvest/tech-plan.md) (design), the `decisions-*.md` logs (why), and [`tasks/`](docs/features/pr-eval-harvest/tasks/) (the board). |
 
 For contributor setup, coding standards, and the spec-driven agent-burndown workflow this repo is

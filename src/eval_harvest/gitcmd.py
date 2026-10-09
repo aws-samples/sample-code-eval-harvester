@@ -16,8 +16,14 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess  # argv lists with shell=False only; see git()/gh() below. # nosec B404
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
+
+#: The parent variables a hermetic git child keeps (:meth:`GitCommandRunner.isolated_git_env`). Windows
+#: needs ``SYSTEMROOT`` to start a process from an explicit ``env=`` (the ``subprocess`` docs require it),
+#: and git needs a valid home: ``HOME``, or on Windows ``HOMEDRIVE``/``HOMEPATH``/``USERPROFILE``, from
+#: which git for Windows derives one when ``HOME`` is unset. Upper-case, as Windows reports them.
+GIT_PLATFORM_VARIABLES: frozenset[str] = frozenset({"SYSTEMROOT", "HOME", "HOMEDRIVE", "HOMEPATH", "USERPROFILE"})
 
 
 class GitCommandRunner:
@@ -63,6 +69,28 @@ class GitCommandRunner:
         child["GIT_CONFIG_NOSYSTEM"] = "1"  # ignore /etc/gitconfig
         child["GIT_CONFIG_GLOBAL"] = os.devnull  # ignore the user's ~/.gitconfig
         child["GIT_CONFIG_SYSTEM"] = os.devnull  # belt-and-suspenders with NOSYSTEM
+        return child
+
+    @classmethod
+    def isolated_git_env(cls, source: Mapping[str, str], *, inherit: Iterable[str] = ()) -> dict[str, str]:
+        """Derive a hermetic git child env: :meth:`git_child_env` over the platform variables alone.
+
+        For a caller whose git result must be a function of its arguments and nothing else — the seal's
+        verdict, a fixture repository's SHAs — so no other parent variable reaches git: no ``GIT_DIR``
+        pointing it at another repository, no ``GIT_CONFIG_COUNT`` or ``GIT_CONFIG_PARAMETERS`` injecting
+        config. ``source`` keeps only :data:`GIT_PLATFORM_VARIABLES` (plus any names in ``inherit``,
+        compared case-insensitively as Windows does), which is what lets the child start on Windows and
+        keep the valid home :meth:`git_child_env` relies on. That home still holds two git inputs config
+        isolation does not cover, the default ``core.excludesFile`` and ``core.attributesFile`` under
+        ``~/.config/git``, so both are pinned to the null device as command-scope config.
+        """
+        kept = GIT_PLATFORM_VARIABLES | {name.upper() for name in inherit}
+        child = cls.git_child_env({name: value for name, value in source.items() if name.upper() in kept})
+        child["GIT_CONFIG_COUNT"] = "2"
+        child["GIT_CONFIG_KEY_0"] = "core.excludesFile"  # no global ignore file decides what `add` stages
+        child["GIT_CONFIG_VALUE_0"] = os.devnull
+        child["GIT_CONFIG_KEY_1"] = "core.attributesFile"  # no global attributes file changes a diff or a checkout
+        child["GIT_CONFIG_VALUE_1"] = os.devnull
         return child
 
     @staticmethod
