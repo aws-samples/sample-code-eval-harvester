@@ -638,12 +638,20 @@ def test_emit_does_not_claim_all_checks_passed_when_unresolved(capsys: pytest.Ca
 
 
 def test_emit_names_each_unresolved_check_and_reason(capsys: pytest.CaptureFixture[str]) -> None:
-    """Every unresolved check appears with its reason and a runnable `next:` command — not a bare count."""
-    Cli._report_emit(_emit_result_with_unresolved(), json_mode=False)
+    """Every unresolved check appears with its reason and a runnable `next:` command — not a bare count.
+
+    The report prints the task path in the host's native form, as the line naming the written datapoint
+    and the ``--json`` ``task`` field do, so the expected path is the same ``Path`` rendered on this OS:
+    on Windows the command reads ``verify tasks\\our-org__...``, which is what that shell runs.
+    """
+    result = _emit_result_with_unresolved()
+    Cli._report_emit(result, json_mode=False)
     out = capsys.readouterr().out
+    task = str(Path("tasks", "our-org__our-repo__pr1234-reject"))
     assert "base-and-patch" in out and "no clone provided" in out
     assert "git-channel-absence" in out and "no container runtime" in out
-    assert "next: eval-harvest verify tasks/our-org__our-repo__pr1234-reject" in out
+    assert f"{task} written" in out
+    assert f"next: eval-harvest verify {task}\n" in out  # the very path written, nothing appended
 
 
 def test_emit_reports_all_passed_when_nothing_unresolved(capsys: pytest.CaptureFixture[str]) -> None:
