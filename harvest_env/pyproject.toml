@@ -11,15 +11,15 @@ name = "harvest-env"
 version = "0.1.0"
 description = "eval-harvest's packaged Lambda MicroVMs Harbor environment, loaded into an unmodified Harbor by import path."
 requires-python = ">=3.12"
-# The real contents of Harbor's absent `lambda-microvms` extra: microvms is the client for the in-VM
-# agentd daemon; boto3 uploads the build artifact and reads image state (the lambda-microvms API
-# model first shipped in boto3 1.43.35 — the floor is not incidental); dockerfile-parse is pulled in
-# by Harbor's environment-definition machinery at construction time. `harbor` is the host it plugs into.
+# microvms owns builds, AWS lifecycle, and guest execution. boto3 supplies the credential/service
+# preflight (the lambda-microvms model first shipped in 1.43.35). Harbor's environment-definition
+# machinery imports dockerfile-parse at construction time. Keep the SDK exact so its provisioned
+# daemon and the high-level API remain a tested pair.
 dependencies = [
   # Pinned exactly: this environment imports Harbor internals, so a newer Harbor could move those
   # under it.
   "harbor==0.22.0",
-  "microvms>=0.5.0",
+  "microvms==0.11.0",
   "boto3>=1.43.35",
   "dockerfile-parse>=2.0.1",
 ]

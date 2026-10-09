@@ -33,7 +33,7 @@ dev = ["ruff", "pytest", "pytest-xdist", "mypy", "pydantic"]
 # `harvest-env`: the packaged environment Harbor loads by import path (H-3). It cannot live under
 # `harbor.*` on a PYTHONPATH overlay — a regular package cannot be partially overlaid by a same-named
 # namespace portion — so it is its own distribution (see [tool.uv.sources] and harvest_env/).
-eval = ["harbor==0.22.0", "microvms>=0.5.0", "boto3>=1.43.35", "dockerfile-parse>=2.0.1", "harvest-env"]
+eval = ["harbor==0.22.0", "microvms==0.11.0", "boto3>=1.43.35", "dockerfile-parse>=2.0.1", "harvest-env"]
 
 [tool.uv.sources]
 # The packaged Lambda MicroVMs environment lives in-repo; install it editable so a checkout runs the
