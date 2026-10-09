@@ -32,24 +32,28 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess  # nosec B404  # only Seal.git spawns git, always as a fixed argv list, never a shell string
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-#: Absolute path to git, resolved once. ``path=os.defpath`` preserves the search space the seal
-#: uses (the subprocess ``env`` below carries no ``PATH``, so git falls back to ``os.defpath``), and
-#: ``or "git"`` keeps the absent-git failure a plain ``FileNotFoundError`` rather than a new error at
-#: import time. Resolving the full path is also what keeps bandit's partial-path finding structural
-#: rather than suppressed.
-_GIT: Final = shutil.which("git", path=os.defpath) or "git"
+from eval_harvest.gitcmd import GIT_EXECUTABLE, GitCommandRunner
 
-#: The read-only, offline environment git runs under: prompts disabled, no ambient locks, and a
-#: ``HOME`` that resolves nowhere so a developer's ``~/.gitconfig`` cannot alter the verdict. Carries
-#: no ``PATH`` on purpose (see ``_GIT``).
-_GIT_ENV: Final = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "HOME": "/nonexistent"}
+#: Absolute path to git, resolved once by the shared chokepoint (``gitcmd``): ``os.defpath`` first,
+#: so on POSIX the system git wins over any environment's shim, then the real ``PATH``, which is the
+#: only place git lives on Windows (``os.defpath`` is ``.;C:\bin`` there). The path must be absolute:
+#: Windows runs ``executable=`` as given and never searches for it. A missing git still fails as a plain
+#: ``FileNotFoundError`` at call time, never as a new error at import. Resolving the full path is also
+#: what keeps bandit's partial-path finding structural rather than suppressed.
+_GIT: Final = GIT_EXECUTABLE
+
+#: The read-only, offline environment git runs under: prompts disabled, no ambient locks, and no
+#: system, global or home-level git file, so a developer's ``~/.gitconfig`` cannot alter the verdict.
+#: Built from the platform variables alone (``SYSTEMROOT`` and the home, which Windows git needs to
+#: start), so no ``GIT_DIR`` or env-injected config from the caller reaches git either. Carries no
+#: ``PATH`` on purpose: the seal's git spawns no helper, and ``_GIT`` is already absolute.
+_GIT_ENV: Final = GitCommandRunner.isolated_git_env(os.environ)
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,12 +509,12 @@ class Seal:
         """Run a read-only git command in ``repo`` with prompts disabled; return ``(returncode, stdout)``.
 
         ``argv`` is built here as a list and never passed through a shell, and the environment carries
-        no ``PATH`` and a nowhere ``HOME`` — untrusted repo content cannot reach a shell (§3), and no
-        remote is configured, so nothing here touches the network (NFR-2).
+        no ``PATH`` and no user-level git config — untrusted repo content cannot reach a shell (§3), and
+        no remote is configured, so nothing here touches the network (NFR-2).
         """
         # argv[0] is the literal program name; the resolved binary runs via ``executable=`` (_GIT,
-        # defpath-hardened above). shell=False, _GIT_ENV carries no PATH and a HOME that resolves
-        # nowhere, and every dynamic value is its own argv element — a ref name from the repository is
+        # defpath-hardened above). shell=False, _GIT_ENV carries no PATH and isolates every user-level
+        # git file, and every dynamic value is its own argv element — a ref name from the repository is
         # never interpreted as a command. A literal argv[0] also keeps the analyzers reading a constant.
         completed = subprocess.run(  # nosec B607 - literal argv[0], real binary via executable=; B603 skipped in pyproject
             ["git", "-C", str(repo), "--no-pager", *args],

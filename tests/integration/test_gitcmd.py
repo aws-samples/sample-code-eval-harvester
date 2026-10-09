@@ -7,9 +7,11 @@ real, throwaway repository — they are the only place a subprocess actually run
 
 from __future__ import annotations
 
+import os
+import subprocess  # nosec B404  # drives real git on argv lists only, shell=False
 from pathlib import Path
 
-from eval_harvest.gitcmd import GitCommandRunner
+from eval_harvest.gitcmd import GIT_EXECUTABLE, GitCommandRunner
 
 
 def _make_repo_with_one_commit(repo: Path) -> None:
@@ -62,6 +64,60 @@ class TestChildEnvironment:
         assert child["GLAB_NO_PROMPT"] == "1"
         assert child["GLAB_SEND_TELEMETRY"] == "0"
         assert child["GITLAB_TOKEN"] == "glpat_ci_credential"  # the self-managed CI credential must survive
+
+
+class TestIsolatedChildEnvironment:
+    """The hermetic env keeps only what git needs to start on every OS, and no user-level git file."""
+
+    def test_keeps_the_windows_platform_variables_and_nothing_else(self) -> None:
+        parent = {
+            "SystemRoot": r"C:\Windows",  # matched case-insensitively, as Windows names are
+            "USERPROFILE": r"C:\Users\x",
+            "PATH": r"C:\Program Files\Git\cmd",
+            "GIT_DIR": r"C:\elsewhere.git",
+            "GIT_CONFIG_PARAMETERS": "'remote.origin.url'='https://example.invalid/x'",
+        }
+        child = GitCommandRunner.isolated_git_env(parent)
+        assert child["SystemRoot"] == r"C:\Windows"  # Windows cannot start a process from env= without it
+        assert child["USERPROFILE"] == r"C:\Users\x"  # git for Windows derives its home from it
+        assert "PATH" not in child
+        assert "GIT_DIR" not in child
+        assert "GIT_CONFIG_PARAMETERS" not in child
+        assert child["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert child["GIT_TERMINAL_PROMPT"] == "0"
+
+    def test_inherit_adds_named_variables(self) -> None:
+        child = GitCommandRunner.isolated_git_env({"PATH": "/usr/bin", "LANG": "C"}, inherit=("path",))
+        assert child["PATH"] == "/usr/bin"
+        assert "LANG" not in child
+
+    def test_home_level_ignore_attributes_and_config_do_not_reach_git(self, tmp_path: Path) -> None:
+        # A real, valid home whose git files would each change what git reports for this repo.
+        home = tmp_path / "home"
+        (home / ".config" / "git").mkdir(parents=True)
+        (home / ".config" / "git" / "ignore").write_text("*.py\n", encoding="utf-8", newline="\n")
+        (home / ".config" / "git" / "attributes").write_text("* -diff\n", encoding="utf-8", newline="\n")
+        (home / ".gitconfig").write_text('[remote "origin"]\n\turl = https://example.invalid/x\n', encoding="utf-8")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "code.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+        env = GitCommandRunner.isolated_git_env({**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": ""}, inherit=("PATH",))
+
+        def git(*args: str) -> str:
+            completed = subprocess.run(  # nosec B607 - literal argv[0], real binary via executable=; B603 skipped in pyproject
+                ["git", "-C", str(repo), *args],
+                executable=GIT_EXECUTABLE,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+            return completed.stdout
+
+        git("init", "--quiet")
+        assert git("status", "--porcelain") == "?? code.py\n"  # the home's ignore file did not hide it
+        assert git("check-attr", "diff", "code.py") == "code.py: diff: unspecified\n"
+        assert "remote." not in git("config", "--list")  # nor did ~/.gitconfig add a remote
 
 
 class TestExecutableResolution:
