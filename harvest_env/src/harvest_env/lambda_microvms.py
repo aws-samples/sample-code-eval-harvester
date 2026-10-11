@@ -3,7 +3,9 @@
 Install with `uv sync --group eval` and load
 `harvest_env.lambda_microvms:LambdaMicrovmsEnvironment`. Each trial owns one
 ARM64 MicroVM. The SDK owns daemon provisioning, image build context and reuse,
-guest identity/environment resolution, and streaming command completion.
+guest identity/environment resolution, and streaming command completion. Every
+SDK call that reaches AWS or the VM is awaited through its `_async` twin, so the
+network work runs on the SDK's own runtime and Harbor's event loop never blocks.
 
 Required settings are MICROVM_BUCKET, MICROVM_BUILD_ROLE_ARN and AWS_REGION
 (or the corresponding constructor options). An optional guest execution role
@@ -22,8 +24,7 @@ import hashlib
 import os
 import re
 import uuid
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, override
 
@@ -76,6 +77,7 @@ _MAX_DURATION_SEC = 28_800
 _DEFAULT_READY_TIMEOUT_SEC = 300.0
 _IMAGE_NAME_MAX_LEN = 64
 _IMAGE_NAME_HASH_LEN = 12
+_OUTPUT_CALLBACK_TIMEOUT_SEC = 30.0
 
 
 def sanitize_image_name(raw: str, *, max_len: int = _IMAGE_NAME_MAX_LEN) -> str:
@@ -188,10 +190,11 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         self._sandbox: Any | None = None
         self._session: Any | None = None
         self._keepalive: Any | None = None
+        self._microvm_id: str | None = None
         self._agentd_bytes: bytes | None = None
         self._image_name_cache: str | None = None
         self._numeric_groups: dict[int, int | None] = {}
-        self._lifecycle: ThreadPoolExecutor | None = None
+        self._transition: asyncio.Task[Any] | None = None
         self._stop_lock = asyncio.Lock()
 
     # ── contract metadata ────────────────────────────────────────────────
@@ -247,20 +250,28 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
 
     # ── SDK image and VM lifecycle ──────────────────────────────────────
 
-    async def _lifecycle_call(self, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-        """Serialize native Sandbox calls, including cleanup after cancellation.
+    async def _await_transition(self, operation: Coroutine[Any, Any, Any]) -> Any:
+        """Await a build or launch that a cancelled caller must not lose track of.
 
-        Cancelling an asyncio waiter cannot stop a native worker. Queue teardown
-        behind build/launch, and read Sandbox properties on that worker too:
-        the SDK's accessors take the same native lock.
+        The SDK lets a cancelled lifecycle transition run to completion, so a
+        cancelled launch still allocates its VM. The task kept here is what stop()
+        waits for before it terminates, so that VM cannot escape cleanup.
         """
-        if self._lifecycle is None:
-            self._lifecycle = ThreadPoolExecutor(max_workers=1, thread_name_prefix="harbor-microvm")
-        return await asyncio.get_running_loop().run_in_executor(self._lifecycle, lambda: function(*args, **kwargs))
+        self._transition = asyncio.ensure_future(operation)
+        return await asyncio.shield(self._transition)
 
-    def _sandbox_or_create(self) -> Any:
+    async def _settle_transition(self) -> None:
+        """Wait for an in-flight build or launch to finish, whatever its outcome."""
+        transition, self._transition = self._transition, None
+        if transition is None:
+            return
+        await asyncio.wait([transition])
+        if not transition.cancelled() and transition.exception() is not None:
+            self.logger.debug(f"MicroVM transition before teardown failed: {transition.exception()}")
+
+    async def _sandbox_or_create(self) -> Any:
         if self._sandbox is None:
-            self._sandbox = microvms.Sandbox(self._microvms_region)
+            self._sandbox = await microvms.Sandbox.create_async(self._microvms_region)
         return self._sandbox
 
     def size_class(self) -> Any:
@@ -281,10 +292,10 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         base = microvms.BaseImage.from_dockerfile(self.harness_dockerfile())
         return microvms.BaseImage(self.base_image_name, base.docker_ref, self._dockerfile_workdir or "")
 
-    def _load_agentd(self) -> bytes:
+    async def _load_agentd(self) -> bytes:
         """Use the SDK's matching, verified download or an explicit ARM64 binary."""
         if self._agentd_bytes is None:
-            self._agentd_bytes = microvms.provision_agentd(binary=self._agentd_binary_path)
+            self._agentd_bytes = await microvms.provision_agentd_async(binary=self._agentd_binary_path)
         return self._agentd_bytes
 
     @property
@@ -293,12 +304,13 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         return self._image_name_cache or self.image_name_prefix
 
     async def _ensure_image(self, force_build: bool) -> tuple[str, str]:
-        def ensure() -> tuple[str, str]:
-            # Provisioning and local checks precede creation of the AWS client.
-            binary = self._load_agentd()
-            dockerfile = self.harness_dockerfile()
-            base, size = self.base_image(), self.size_class()
-            ensured = self._sandbox_or_create().ensure_image(
+        # Provisioning and local checks precede creation of the AWS client.
+        binary = await self._load_agentd()
+        dockerfile = self.harness_dockerfile()
+        base, size = self.base_image(), self.size_class()
+        sandbox = await self._sandbox_or_create()
+        ensured = await self._await_transition(
+            sandbox.ensure_image_async(
                 name_prefix=self.image_name_prefix,
                 binary=binary,
                 dockerfile=dockerfile,
@@ -315,28 +327,32 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
                 },
                 wait_timeout=float(self.task_env_config.build_timeout_sec),
             )
-            self._image_name_cache = ensured.image.name
-            for warning in ensured.warnings:
-                self.logger.warning(warning)
-            return str(ensured.image.identifier), str(ensured.image.version)
+        )
+        self._image_name_cache = ensured.image.name
+        for warning in ensured.warnings:
+            self.logger.warning(warning)
+        return str(ensured.image.identifier), str(ensured.image.version)
 
-        return await self._lifecycle_call(ensure)
+    async def _run_and_record(self, sandbox: Any, image_arn: str, image_version: str) -> Any:
+        # run_async waits for the platform and the daemon; a second ready poll is redundant.
+        session = await sandbox.run_async(
+            image_identifier=image_arn,
+            image_version=image_version,
+            execution_role_arn=self.execution_role_arn,
+            egress=True,
+            max_idle_sec=self.max_idle_sec,
+            max_duration_sec=self.max_duration_sec,
+            ready_timeout=self.ready_timeout_sec,
+            token_scope=self.session_id,
+        )
+        # A Sandbox property waits for the sandbox's lock, which an exec holds while it runs.
+        # Read the id now, before any exec, so teardown never reads it on the event loop.
+        self._microvm_id = sandbox.microvm_id
+        return session
 
     async def _launch(self, image_arn: str, image_version: str) -> None:
-        def launch() -> Any:
-            return self._sandbox_or_create().run(
-                image_identifier=image_arn,
-                image_version=image_version,
-                execution_role_arn=self.execution_role_arn,
-                egress=True,
-                max_idle_sec=self.max_idle_sec,
-                max_duration_sec=self.max_duration_sec,
-                ready_timeout=self.ready_timeout_sec,
-                token_scope=self.session_id,
-            )
-
-        # run waits for the platform and the daemon; a second ready poll is redundant.
-        self._session = await self._lifecycle_call(launch)
+        sandbox = await self._sandbox_or_create()
+        self._session = await self._await_transition(self._run_and_record(sandbox, image_arn, image_version))
         self._keepalive = self._session.keep_awake(while_busy=False)
 
     @override
@@ -356,8 +372,8 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
             await self.ensure_dirs(dirs)
             await self._upload_environment_dir_after_start()
         except BaseException:
-            # Includes Harbor cancelling a slow build/launch. Teardown queues after
-            # its worker, so a VM allocated after cancellation cannot escape cleanup.
+            # Includes Harbor cancelling a slow build/launch. Teardown waits for that
+            # transition to finish, so a VM allocated after cancellation cannot escape cleanup.
             await self.stop(delete=True)
             raise
 
@@ -371,39 +387,34 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
             self._session = None
             if keepalive is not None:
                 try:
-                    await asyncio.to_thread(keepalive.stop)
+                    await keepalive.stop_async()
                 except Exception as exc:
                     self.logger.warning(f"MicroVM keepalive stop failed: {exc}")
-
-            def stop_sandbox() -> tuple[str | None, Any]:
-                sandbox = self._sandbox
-                if sandbox is None:
-                    return None, None
-                microvm_id = sandbox.microvm_id
-                if not delete:
-                    return microvm_id, sandbox.suspend() if microvm_id else None
-                return microvm_id, sandbox.terminate(wait_for_terminated=True)
-
-            microvm_id, report = await self._lifecycle_call(stop_sandbox)
+            await self._settle_transition()
+            sandbox = self._sandbox
+            if sandbox is None:
+                return
+            # With no recorded id no session exists, so no exec holds the sandbox's lock.
+            microvm_id = self._microvm_id if self._microvm_id is not None else sandbox.microvm_id
             if not delete:
                 if microvm_id:
-                    self.logger.info(f"Suspended MicroVM {microvm_id} (delete=False, state={report})")
+                    state = await sandbox.suspend_async()
+                    self.logger.info(f"Suspended MicroVM {microvm_id} (delete=False, state={state})")
                 return
-            if report is not None and (
+            report = await sandbox.terminate_async(wait_for_terminated=True)
+            if (
                 report.leaked
                 or report.failures
                 or report.undeleted
                 or (microvm_id is not None and report.lifecycle != "TERMINATED")
             ):
-                # Retain the native handle and executor so another stop can retry.
+                # Retain the native handle so another stop can retry.
                 raise RuntimeError(
                     f"MicroVM {microvm_id} teardown failed: lifecycle={report.lifecycle} "
                     f"undeleted={report.undeleted} failures={report.failures}"
                 )
             self._sandbox = None
-            if self._lifecycle is not None:
-                self._lifecycle.shutdown(wait=False)
-                self._lifecycle = None
+            self._microvm_id = None
 
     # ── command execution ───────────────────────────────────────────────
 
@@ -413,21 +424,39 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         return self._session
 
     @staticmethod
-    def _bridge_output(callback: OutputCallback | None) -> Callable[[Any], None] | None:
+    async def _deliver_output(callback: OutputCallback, chunks: asyncio.Queue[Any]) -> None:
+        """Hand each chunk to Harbor's callback in arrival order, until the None sentinel."""
+        while (chunk := await chunks.get()) is not None:
+            # A stalled consumer must not hold the trial indefinitely.
+            await asyncio.wait_for(callback(chunk.text(), chunk.stream), timeout=_OUTPUT_CALLBACK_TIMEOUT_SEC)
+
+    async def _run_to_completion(self, session: Any, command: str, **options: Any) -> Any:
+        """Run one command, streaming its output to Harbor's callback when one is set.
+
+        The SDK calls on_output on the event loop's thread and needs a plain function,
+        while Harbor's callback is a coroutine. Chunks go through a queue to a delivery
+        task; when that task fails, the next chunk raises its error, which stops the
+        SDK's delivery, and the SDK re-raises it once the exec is acknowledged.
+        """
+        callback = self._output_callback()
         if callback is None:
-            return None
-        loop = asyncio.get_running_loop()
+            return await session.run_to_completion_async(command, **options)
+        chunks: asyncio.Queue[Any] = asyncio.Queue()
+        delivery = asyncio.create_task(self._deliver_output(callback, chunks))
 
         def on_output(chunk: Any) -> None:
-            future = asyncio.run_coroutine_threadsafe(callback(chunk.text(), chunk.stream), loop)
-            # A stalled consumer must not hold the SDK worker indefinitely.
-            try:
-                future.result(timeout=30)
-            except BaseException:
-                future.cancel()
-                raise
+            if delivery.done():
+                delivery.result()
+            chunks.put_nowait(chunk)
 
-        return on_output
+        try:
+            result = await session.run_to_completion_async(command, on_output=on_output, **options)
+        except BaseException:
+            delivery.cancel()
+            raise
+        chunks.put_nowait(None)
+        await delivery
+        return result
 
     async def _numeric_user_group(self, session: Any, user: str | int | None) -> int | None:
         # The SDK resolves named users' primary groups, but deliberately leaves
@@ -438,7 +467,7 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         uid = int(user)
         if uid not in self._numeric_groups:
             try:
-                passwd = await asyncio.to_thread(session.download_file, "/etc/passwd")
+                passwd = await session.download_file_async("/etc/passwd")
             except microvms.MicrovmError as exc:
                 if not self._is_not_found(exc):
                     raise
@@ -469,8 +498,8 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         run_as = self._resolve_user(user)
         try:
             group = await self._numeric_user_group(session, run_as)
-            result = await asyncio.to_thread(
-                session.run_to_completion,
+            result = await self._run_to_completion(
+                session,
                 command,
                 shell="bash",  # nosec B604: selects the guest shell over SDK HTTPS, no host shell
                 inherit_image_env=True,
@@ -480,11 +509,11 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
                 group=group,
                 timeout_sec=float(timeout_sec) if timeout_sec is not None else None,
                 exec_id=uuid.uuid4().hex,
-                on_output=self._bridge_output(self._output_callback()),
             )
         except asyncio.CancelledError:
-            # A one-shot kill can miss an exec the worker has not registered yet.
-            # This trial owns the VM, so end it before returning cancellation.
+            # Cancelling the SDK call stops its drive but leaves the exec running in the
+            # VM, and a one-shot kill can miss an exec not yet registered. This trial owns
+            # the VM, so end it before returning cancellation.
             await self.stop(delete=True)
             raise
         except microvms.MicrovmError as exc:
@@ -514,7 +543,7 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         source = Path(source_path)
         mode = f"{source.stat().st_mode & 0o777:04o}"
         try:
-            await asyncio.to_thread(session.upload_file, target_path, source.read_bytes(), mode=mode)
+            await session.upload_file_async(target_path, source.read_bytes(), mode=mode)
         except microvms.MicrovmError as exc:
             raise RuntimeError(f"Failed to upload {source} to MicroVM {target_path}: {exc}") from exc
 
@@ -528,7 +557,7 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
         # Uncompressed: the daemon's tar route extracts a plain tar stream.
         archive = await asyncio.to_thread(pack_dir_to_bytes, source, compress=False)
         try:
-            await asyncio.to_thread(session.upload_tar, target_dir, archive.getvalue())
+            await session.upload_tar_async(target_dir, archive.getvalue())
         except microvms.MicrovmError as exc:
             raise RuntimeError(f"Failed to upload directory {source} to MicroVM {target_dir}: {exc}") from exc
 
@@ -536,7 +565,7 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         session = self._require_session()
         try:
-            data = await asyncio.to_thread(session.download_file, source_path)
+            data = await session.download_file_async(source_path)
         except microvms.MicrovmError as exc:
             if self._is_not_found(exc):
                 raise FileNotFoundError(f"MicroVM file not found: {source_path}") from exc
@@ -549,7 +578,7 @@ class LambdaMicrovmsEnvironment(BaseEnvironment):
     async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
         session = self._require_session()
         try:
-            data = await asyncio.to_thread(session.download_tar, source_dir)
+            data = await session.download_tar_async(source_dir)
         except microvms.MicrovmError as exc:
             if self._is_not_found(exc):
                 raise FileNotFoundError(f"MicroVM directory not found: {source_dir}") from exc
