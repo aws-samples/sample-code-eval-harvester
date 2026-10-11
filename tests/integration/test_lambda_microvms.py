@@ -4,7 +4,8 @@ This is the project's own MIT-0 behaviour suite for `harvest_env/src/harvest_env
 — the environment eval-harvest loads into an unmodified Harbor by import path (H-3). It stubs
 every AWS/VM boundary (``Sandbox`` and ``Session``) with signature-checked fakes
 that record their calls; the ``microvms`` value types (``SizeClass``, ``Region``, ``BaseImage``) are
-real and need no credentials.
+real and need no credentials. The fakes define only the SDK's ``_async`` spellings, so a blocking
+SDK call left in the provider fails here instead of stalling Harbor's event loop.
 
 The suite needs the `eval` group synced (harbor + harvest-env + microvms/boto3), so it carries the
 same visible-skip treatment as the other Harbor-dependent modules: `mise run test` syncs `dev` only
@@ -17,9 +18,8 @@ import asyncio
 import inspect
 import io
 import tarfile
-import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -103,7 +103,7 @@ class FakeExecResult:
 
 
 class FakeChunk:
-    """One SDK output chunk sent through the synchronous callback."""
+    """One SDK output chunk, handed to the plain on_output function on the event loop."""
 
     def __init__(self, stream: str, text: str) -> None:
         self.stream = stream
@@ -120,7 +120,8 @@ class FakeKeepAwake:
         self.stopped = 0
         self.error: Exception | None = None
 
-    def stop(self) -> None:
+    async def stop_async(self) -> None:
+        _validate_sdk_call(microvms.KeepAwake.stop_async)
         self.stopped += 1
         if self.error:
             raise self.error
@@ -131,8 +132,11 @@ class FakeSession:
 
     def __init__(self) -> None:
         self.runs: list[dict[str, Any]] = []
-        self.responder: Callable[[str, dict[str, Any]], FakeExecResult] = lambda command, kwargs: FakeExecResult()
+        self.responder: Callable[[str, dict[str, Any]], FakeExecResult | Awaitable[FakeExecResult]] = lambda command, kwargs: (
+            FakeExecResult()
+        )
         self.chunks: list[FakeChunk] = []
+        self.delivered = 0
         self.uploaded_files: list[dict[str, Any]] = []
         self.uploaded_tars: list[dict[str, Any]] = []
         self.files: dict[str, bytes] = {}
@@ -141,33 +145,42 @@ class FakeSession:
         self.keep_awake_calls: list[dict[str, Any]] = []
         self.keepalive = FakeKeepAwake()
 
-    def run_to_completion(self, command: str, **kwargs: Any) -> FakeExecResult:
-        _validate_sdk_call(microvms.Session.run_to_completion, command, **kwargs)
+    async def run_to_completion_async(self, command: str, **kwargs: Any) -> FakeExecResult:
+        _validate_sdk_call(microvms.Session.run_to_completion_async, command, **kwargs)
         self.runs.append({"command": command, **kwargs})
         callback = kwargs.get("on_output")
         if callback:
+            # The SDK calls on_output between the coroutine's steps; an exception from it stops
+            # delivery and is re-raised once the exec is acknowledged.
             for chunk in self.chunks:
+                await asyncio.sleep(0)
                 callback(chunk)
-        return self.responder(command, kwargs)
+                self.delivered += 1
+        result = self.responder(command, kwargs)
+        return await result if inspect.isawaitable(result) else result
 
     def keep_awake(self, **kwargs: Any) -> FakeKeepAwake:
         _validate_sdk_call(microvms.Session.keep_awake, **kwargs)
         self.keep_awake_calls.append(kwargs)
         return self.keepalive
 
-    def upload_file(self, path: str, data: bytes, *, mode: str | None = None) -> None:
+    async def upload_file_async(self, path: str, data: bytes, *, mode: str | None = None) -> None:
+        _validate_sdk_call(microvms.Session.upload_file_async, path, data, mode=mode)
         self.uploaded_files.append({"path": path, "data": data, "mode": mode})
 
-    def upload_tar(self, remote: str, archive: bytes) -> None:
+    async def upload_tar_async(self, remote: str, archive: bytes) -> None:
+        _validate_sdk_call(microvms.Session.upload_tar_async, remote, archive)
         self.uploaded_tars.append({"remote": remote, "archive": archive})
 
-    def download_file(self, path: str) -> bytes:
+    async def download_file_async(self, path: str) -> bytes:
+        _validate_sdk_call(microvms.Session.download_file_async, path)
         self.downloaded_files.append(path)
         if path not in self.files:
             raise _protocol_not_found()
         return self.files[path]
 
-    def download_tar(self, remote: str) -> bytes:
+    async def download_tar_async(self, remote: str) -> bytes:
+        _validate_sdk_call(microvms.Session.download_tar_async, remote)
         if remote not in self.tars:
             raise _protocol_not_found()
         return self.tars[remote]
@@ -206,13 +219,21 @@ class FakeReport:
 
 
 class FakeSandbox:
-    """Records SDK lifecycle calls, checking their installed argument signatures."""
+    """Records SDK lifecycle calls, checking their installed argument signatures.
+
+    Like the SDK's, a launch is a lifecycle transition: cancelling the awaitable leaves the
+    allocation running to completion. ``allocation_gate`` lets a test hold an allocation open.
+    """
 
     def __init__(self) -> None:
         self.ensure_calls: list[dict[str, Any]] = []
         self.run_calls: list[dict[str, Any]] = []
         self.terminate_calls: list[dict[str, Any]] = []
+        self.terminated_ids: list[str | None] = []
         self.build_error: Exception | None = None
+        self.launch_error: Exception | None = None
+        self.allocation_gate: asyncio.Event | None = None
+        self.allocation_started = asyncio.Event()
         self.microvm_id: str | None = None
         self.endpoint: str | None = None
         self.session = FakeSession()
@@ -221,33 +242,38 @@ class FakeSandbox:
         self.terminated = 0
         self.suspended = 0
         self.report = FakeReport()
-        self.worker_threads: list[int] = []
 
-    def ensure_image(self, **kwargs: Any) -> SimpleNamespace:
-        _validate_sdk_call(microvms.Sandbox.ensure_image, **kwargs)
-        self.worker_threads.append(threading.get_ident())
+    async def ensure_image_async(self, **kwargs: Any) -> SimpleNamespace:
+        _validate_sdk_call(microvms.Sandbox.ensure_image_async, **kwargs)
         self.ensure_calls.append(kwargs)
         if self.build_error:
             raise self.build_error
         return SimpleNamespace(image=self.image, warnings=self.warnings, reused=False)
 
-    def run(self, **kwargs: Any) -> FakeSession:
-        _validate_sdk_call(microvms.Sandbox.run, **kwargs)
-        self.worker_threads.append(threading.get_ident())
+    async def run_async(self, **kwargs: Any) -> FakeSession:
+        _validate_sdk_call(microvms.Sandbox.run_async, **kwargs)
         self.run_calls.append(kwargs)
+        return cast(FakeSession, await asyncio.shield(asyncio.ensure_future(self._allocate())))
+
+    async def _allocate(self) -> FakeSession:
+        self.allocation_started.set()
+        if self.allocation_gate is not None:
+            await self.allocation_gate.wait()
         self.microvm_id = "mvm-123"
         self.endpoint = "mvm-123.example.aws"
+        if self.launch_error:
+            raise self.launch_error
         return self.session
 
-    def terminate(self, **kwargs: Any) -> FakeReport:
-        _validate_sdk_call(microvms.Sandbox.terminate, **kwargs)
-        self.worker_threads.append(threading.get_ident())
+    async def terminate_async(self, **kwargs: Any) -> FakeReport:
+        _validate_sdk_call(microvms.Sandbox.terminate_async, **kwargs)
         self.terminate_calls.append(kwargs)
+        self.terminated_ids.append(self.microvm_id)
         self.terminated += 1
         return self.report
 
-    def suspend(self) -> str:
-        self.worker_threads.append(threading.get_ident())
+    async def suspend_async(self) -> str:
+        _validate_sdk_call(microvms.Sandbox.suspend_async)
         self.suspended += 1
         return "SUSPENDED"
 
@@ -549,19 +575,21 @@ def test_base_image_uses_managed_al2023_when_from_matches(tmp_path: Path, agentd
 # ── SDK image preparation ──────────────────────────────────────────────
 
 
-def test_provision_agentd_delegates_and_caches_override(
+async def test_provision_agentd_delegates_and_caches_override(
     tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[Path | None] = []
+    native = microvms.provision_agentd_async
 
-    def provision_agentd(*, binary: Path | None = None) -> bytes:
+    async def provision_agentd_async(*, binary: Path | None = None) -> bytes:
+        _validate_sdk_call(native, binary=binary)
         calls.append(binary)
         return b"verified agentd"
 
-    monkeypatch.setattr(microvms, "provision_agentd", provision_agentd)
+    monkeypatch.setattr(microvms, "provision_agentd_async", provision_agentd_async)
     env = _make_env(tmp_path, agentd_path)
-    assert env._load_agentd() == b"verified agentd"
-    assert env._load_agentd() == b"verified agentd"
+    assert await env._load_agentd() == b"verified agentd"
+    assert await env._load_agentd() == b"verified agentd"
     assert calls == [agentd_path]
 
 
@@ -664,8 +692,7 @@ async def test_start_launches_prepares_dirs_and_keeps_entire_trial_awake(
     await env.stop(delete=True)
     assert sandbox.session.keepalive.stopped == 1
     assert sandbox.terminate_calls == [{"wait_for_terminated": True}]
-    assert len(set(sandbox.worker_threads)) == 1
-    assert sandbox.worker_threads[0] != threading.get_ident()
+    assert sandbox.terminated_ids == ["mvm-123"]
 
 
 @pytest.mark.parametrize("stage", ["launch", "prepare_dirs"])
@@ -673,20 +700,18 @@ async def test_start_failure_terminates_vm(tmp_path: Path, agentd_path: Path, mi
     env = _make_env(tmp_path, agentd_path)
     sandbox = _wire(env)
 
-    def fail_launch(**kwargs: Any) -> FakeSession:
-        sandbox.microvm_id = "mvm-partial"
-        raise microvms.LaunchDiedError("image hook timed out")
-
     def fail_command(command: str, kwargs: dict[str, Any]) -> FakeExecResult:
         raise microvms.RetryableError("directory preparation failed")
 
     if stage == "launch":
-        sandbox.run = fail_launch  # type: ignore[method-assign]
+        # The VM exists, but the launch raised, so the provider never recorded its id.
+        sandbox.launch_error = microvms.LaunchDiedError("image hook timed out")
     else:
         sandbox.session.responder = fail_command
     with pytest.raises((microvms.LaunchDiedError, RuntimeError), match="failed|timed out"):
         await env.start(force_build=False)
     assert sandbox.terminated == 1
+    assert sandbox.terminated_ids == ["mvm-123"]
     assert env._sandbox is None and env._session is None
     assert sandbox.session.keepalive.stopped == (0 if stage == "launch" else 1)
 
@@ -696,29 +721,19 @@ async def test_cancelled_launch_waits_for_allocation_before_teardown(
 ) -> None:
     env = _make_env(tmp_path, agentd_path)
     sandbox = _wire(env)
-    entered, release = threading.Event(), threading.Event()
-    original_run = sandbox.run
-
-    def slow_run(**kwargs: Any) -> FakeSession:
-        entered.set()
-        assert release.wait(timeout=5), "test did not release the launch worker"
-        return original_run(**kwargs)
-
-    sandbox.run = slow_run  # type: ignore[method-assign]
+    sandbox.allocation_gate = asyncio.Event()
     task = asyncio.create_task(env.start(force_build=False))
-    try:
-        assert await asyncio.to_thread(entered.wait, 5)
-        task.cancel()
+    await asyncio.wait_for(sandbox.allocation_started.wait(), timeout=5)
+    task.cancel()
+    for _ in range(10):
         await asyncio.sleep(0)
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
-    finally:
-        release.set()
-    assert sandbox.microvm_id == "mvm-123"
-    assert sandbox.terminated == 1
+    # Teardown waits for the cancelled launch instead of terminating a sandbox with no VM yet.
+    assert sandbox.terminated == 0
+    sandbox.allocation_gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    assert sandbox.terminated_ids == ["mvm-123"]
     assert env._sandbox is None and env._session is None
-    assert len(set(sandbox.worker_threads)) == 1
 
 
 @pytest.mark.parametrize(
@@ -735,7 +750,7 @@ async def test_failed_teardown_retains_handle_for_retry(
 ) -> None:
     env = _make_env(tmp_path, agentd_path)
     sandbox = _wire(env)
-    sandbox.run()
+    await sandbox.run_async()
     sandbox.report = report
     with pytest.raises(RuntimeError, match="teardown failed"):
         await env.stop(delete=True)
@@ -807,7 +822,7 @@ async def test_exec_delegates_native_environment_user_and_shell_handling(
     assert run["timeout_sec"] == 30.0
     assert uuid.UUID(run["exec_id"]).version == 4
     assert run["env"] == {"TASK": "scoped", "RUN": "r", "SCOPED": "s"}
-    assert run["on_output"] is None
+    assert run.get("on_output") is None
 
 
 async def test_exec_cwd_precedence(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
@@ -886,23 +901,58 @@ async def test_exec_failure_is_reported(tmp_path: Path, agentd_path: Path, micro
         await env.exec("true")
 
 
-async def test_exec_bridges_output_callback_to_event_loop(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+async def test_exec_streams_output_to_harbor_callback_in_order(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
     env = _make_env(tmp_path, agentd_path)
     session = _wire_session(env)
     session.chunks = [FakeChunk("stdout", "one\n"), FakeChunk("stderr", "warn\n"), FakeChunk("stdout", "two\n")]
     session.responder = lambda command, kwargs: FakeExecResult(stdout="one\ntwo\n", stderr="warn\n")
     seen: list[tuple[str, str]] = []
-    callback_threads: list[int] = []
 
     async def callback(text: str, stream: str) -> None:
+        # The first chunk takes longest, so callbacks scheduled independently would reorder.
+        for _ in range({"one\n": 6, "warn\n": 3, "two\n": 1}[text]):
+            await asyncio.sleep(0)
         seen.append((stream, text))
-        callback_threads.append(threading.get_ident())
 
     with env.scoped_output_callback(callback):
         result = await env.exec("cmd")
     assert seen == [("stdout", "one\n"), ("stderr", "warn\n"), ("stdout", "two\n")]
-    assert callback_threads == [threading.get_ident()] * 3
     assert result.stdout == "one\ntwo\n" and result.stderr == "warn\n"
+
+
+async def test_failing_output_callback_stops_delivery_and_raises(tmp_path: Path, agentd_path: Path, microvm_env: None) -> None:
+    env = _make_env(tmp_path, agentd_path)
+    session = _wire_session(env)
+    session.chunks = [FakeChunk("stdout", f"{index}\n") for index in range(5)]
+    seen: list[str] = []
+
+    async def callback(text: str, stream: str) -> None:
+        seen.append(text)
+        raise ValueError("consumer broke")
+
+    with env.scoped_output_callback(callback), pytest.raises(ValueError, match="consumer broke"):
+        await env.exec("cmd")
+    assert seen == ["0\n"]
+    # The next chunk raised the consumer's error into the SDK, which stopped delivering.
+    assert session.delivered == 1
+
+
+async def test_stalled_output_callback_times_out(
+    tmp_path: Path, agentd_path: Path, microvm_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lm, "_OUTPUT_CALLBACK_TIMEOUT_SEC", 0.05)
+    env = _make_env(tmp_path, agentd_path)
+    session = _wire_session(env)
+    session.chunks = [FakeChunk("stdout", "stuck\n")]
+
+    async def callback(text: str, stream: str) -> None:
+        await asyncio.Event().wait()
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with env.scoped_output_callback(callback), pytest.raises(TimeoutError):
+        await asyncio.wait_for(env.exec("cmd"), timeout=2)
+    assert loop.time() - started < 1, "the provider's own callback timeout did not fire"
 
 
 async def test_cancelled_exec_terminates_vm_even_before_registration(
@@ -911,29 +961,21 @@ async def test_cancelled_exec_terminates_vm_even_before_registration(
     env = _make_env(tmp_path, agentd_path)
     sandbox = _wire(env)
     await env.start(force_build=False)
-    entered, release = threading.Event(), threading.Event()
-    completed = threading.Event()
+    entered = asyncio.Event()
 
-    def delayed_registration(command: str, kwargs: dict[str, Any]) -> FakeExecResult:
+    async def never_registers(command: str, kwargs: dict[str, Any]) -> FakeExecResult:
         entered.set()
-        try:
-            assert release.wait(timeout=5), "test did not release the exec worker"
-            return FakeExecResult()
-        finally:
-            completed.set()
+        await asyncio.Event().wait()
+        return FakeExecResult()
 
-    sandbox.session.responder = delayed_registration
+    sandbox.session.responder = never_registers
     task = asyncio.create_task(env.exec("sleep 999"))
-    try:
-        assert await asyncio.to_thread(entered.wait, 5)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
-        assert sandbox.terminated == 1
-        assert env._session is None and env._sandbox is None
-    finally:
-        release.set()
-        assert await asyncio.to_thread(completed.wait, 5)
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    assert sandbox.terminated == 1
+    assert env._session is None and env._sandbox is None
 
 
 # ── file transfer ──────────────────────────────────────────────────────
@@ -1011,10 +1053,10 @@ async def test_other_daemon_refusals_surface_as_runtime_errors(tmp_path: Path, a
     env = _make_env(tmp_path, agentd_path)
     session = _wire_session(env)
 
-    def refuse(*_: Any, **__: Any) -> None:
+    async def refuse(*_: Any, **__: Any) -> None:
         raise microvms.ProtocolError("400 bad mode")
 
-    session.upload_file = refuse  # type: ignore[method-assign]
+    session.upload_file_async = refuse  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="bad mode"):
         await env.upload_file(agentd_path, "/x")
 
@@ -1041,25 +1083,22 @@ async def test_cancelled_stop_finishes_shielded_teardown(tmp_path: Path, agentd_
     env = _make_env(tmp_path, agentd_path)
     sandbox = _wire(env)
     await env.start(force_build=False)
-    entered, release = threading.Event(), threading.Event()
-    original_terminate = sandbox.terminate
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_terminate = sandbox.terminate_async
 
-    def delayed_terminate(**kwargs: Any) -> FakeReport:
+    async def delayed_terminate(**kwargs: Any) -> FakeReport:
         entered.set()
-        assert release.wait(timeout=5), "test did not release the teardown worker"
-        return original_terminate(**kwargs)
+        await release.wait()
+        return await original_terminate(**kwargs)
 
-    sandbox.terminate = delayed_terminate  # type: ignore[method-assign]
+    sandbox.terminate_async = delayed_terminate  # type: ignore[method-assign]
     task = asyncio.create_task(env.stop(delete=True))
-    try:
-        assert await asyncio.to_thread(entered.wait, 5)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        release.set()
-        # The second stop waits for the shielded first stop's lock to clear.
-        await asyncio.wait_for(env.stop(delete=True), timeout=5)
-    finally:
-        release.set()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    # The second stop waits for the shielded first stop's lock to clear.
+    await asyncio.wait_for(env.stop(delete=True), timeout=5)
     assert sandbox.terminated == 1
     assert env._sandbox is None and env._session is None
