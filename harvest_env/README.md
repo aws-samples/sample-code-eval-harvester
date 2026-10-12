@@ -2,7 +2,7 @@
 
 `harvest-env` loads into stock Harbor `0.22.0` as
 `harvest_env.lambda_microvms:LambdaMicrovmsEnvironment`. It uses the published
-`microvms==0.12.0` wheel and its matching daemon. The CLI package keeps zero runtime
+`microvms==1.0.0` wheel and its matching daemon. The CLI package keeps zero runtime
 dependencies; only the `eval` group installs this provider.
 
 ```bash
@@ -19,7 +19,8 @@ loop; the network work runs on the SDK's own runtime, so no SDK call holds a thr
 - `provision_agentd_async` obtains the matching daemon, verifies downloaded release
   artifacts, and checks ARM64 ELF architecture. It shares the SDK/CLI cache.
   `agentd_binary` and `HARBOR_AGENTD_BINARY` remain explicit overrides; their owners must
-  supply a daemon compatible with SDK `0.12.0`.
+  supply a daemon from the same `1.0.0` release, because SDK `1.0.0` asks client and
+  daemon to be upgraded as a pair.
 - `wrap_dockerfile` and `BaseImage.from_dockerfile` prepare the daemon harness while
   preserving the task's base-image digest. `SizeClass.from_request` selects the baseline.
 - `Sandbox.ensure_image_async` hashes the complete build inputs, packs the context, honors
@@ -46,6 +47,9 @@ command running in the VM, and a one-shot kill can miss an exec not yet register
 cancelled exec terminates the trial's VM. Streamed output reaches Harbor's coroutine
 callback in order through a queue; a callback that fails, or takes more than 30 seconds
 on one chunk, stops delivery and fails the exec once the SDK has acknowledged it.
+`download_file` and `download_dir` read the whole file or directory tar into memory
+within the SDK's 60-second request timeout, and SDK `1.0.0` also refuses a response
+larger than 512 MiB. The provider raises `RuntimeError` when either limit stops a download.
 `stop(delete=True)` waits for observed termination and raises on reported cleanup
 failure, retaining the handle for a retry. `stop(delete=False)` suspends the VM.
 Reusable images, S3 artifacts, and CloudWatch logs remain for reuse and diagnosis.
@@ -61,10 +65,12 @@ S3-prefix, and managed-base options retain their meanings.
 Use `--ek image_name_prefix=my-eval` to name the image cache. The SDK appends a
 12-character content hash. `image_name` is a deprecated alias for the prefix and logs
 a warning; it does not select an exact image name. The SDK's hashing scheme produces
-different names from the previous provider, and SDK `0.12.0` moved that hash to version 2
-so the name also covers the fields the service fixes at image creation. Expect one rebuild
-after upgrading from either, and retain or remove old images through your normal
-resource-management process.
+different names from the previous provider. SDK `0.12.0` moved that hash to version 2 so
+the name also covers the fields the service fixes at image creation. The hash also covers
+the daemon binary, so the `1.0.0` daemon gives every image a new name. Expect one rebuild
+after upgrading from any earlier version. That rebuild is also the one the SDK `1.0.0`
+release notes ask for, since it puts the matching daemon in each image. Retain or remove
+old images through your normal resource-management process.
 
 Network isolation is not available: `egress=False` omits `INTERNET_EGRESS` but does
 not block outbound traffic, and the SDK cannot verify VPC routing. The provider
@@ -92,12 +98,14 @@ timeout/result mapping, ordered output delivery and its failure and stall paths,
 transfers, cancellation of a launch the SDK finishes anyway, and cleanup failure/retry
 without AWS. These checks do not constitute a live VM trial.
 
-Sources checked October 11, 2026:
+Sources checked October 12, 2026:
 
-- [PyPI release metadata](https://pypi.org/pypi/microvms/json), latest stable `0.12.0`.
-- [SDK v0.12.0 binding guide, "Use it from asyncio"](https://github.com/laithalsaadoon/microvms-agentd/blob/v0.12.0/bindings/microvms-py/README.md)
+- [PyPI release metadata](https://pypi.org/pypi/microvms/json), latest stable `1.0.0`.
+- [SDK v1.0.0 release notes](https://github.com/laithalsaadoon/microvms-agentd/blob/v1.0.0/CHANGELOG.md)
+  and [stability policy](https://github.com/laithalsaadoon/microvms-agentd/blob/v1.0.0/docs/STABILITY.md).
+- [SDK v1.0.0 binding guide, "Use it from asyncio"](https://github.com/laithalsaadoon/microvms-agentd/blob/v1.0.0/bindings/microvms-py/README.md)
   and the published wheel's `microvms/__init__.pyi`.
-- [SDK v0.12.0 embedding guide](https://github.com/laithalsaadoon/microvms-agentd/blob/v0.12.0/docs/EMBEDDING.md).
-- [SDK v0.12.0 networking contract](https://github.com/laithalsaadoon/microvms-agentd/blob/v0.12.0/docs/NETWORKING.md).
+- [SDK v1.0.0 embedding guide](https://github.com/laithalsaadoon/microvms-agentd/blob/v1.0.0/docs/EMBEDDING.md).
+- [SDK v1.0.0 networking contract](https://github.com/laithalsaadoon/microvms-agentd/blob/v1.0.0/docs/NETWORKING.md).
 - [Harbor custom-sandbox contract](https://docs.harborframework.com/sandboxes/custom-sandboxes.md)
   and the installed Harbor `0.22.0` `BaseEnvironment` source.
