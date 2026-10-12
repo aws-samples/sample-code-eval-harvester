@@ -19,7 +19,7 @@ dependencies = [
   # Pinned exactly: this environment imports Harbor internals, so a newer Harbor could move those
   # under it.
   "harbor==0.22.0",
-  "microvms==0.12.0",
+  "microvms==1.0.0",
   "boto3>=1.43.35",
   "dockerfile-parse>=2.0.1",
 ]

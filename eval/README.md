@@ -177,7 +177,7 @@ uv run --frozen --group eval harbor --version
 This installs Harbor, `microvms`, and the local `harvest-env` package selected by `uv.lock`.
 The environment is loaded as `harvest_env.lambda_microvms:LambdaMicrovmsEnvironment`.
 
-The [provider guide](../harvest_env/README.md) describes the `microvms==0.12.0` SDK integration
+The [provider guide](../harvest_env/README.md) describes the `microvms==1.0.0` SDK integration
 and image-cache migration. This provider supports public-network tasks only: the platform's
 `egress=False` omits a connector but does not seal outbound traffic. Harbor therefore rejects
 `no-network` and allowlist tasks before a VM launches. The default emitted tasks and this eval's
