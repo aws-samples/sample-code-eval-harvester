@@ -83,14 +83,22 @@ class GitCommandRunner:
         keep the valid home :meth:`git_child_env` relies on. That home still holds two git inputs config
         isolation does not cover, the default ``core.excludesFile`` and ``core.attributesFile`` under
         ``~/.config/git``, so both are pinned to the null device as command-scope config.
+
+        ``maintenance.auto`` is off as well. Git ends a writing command such as ``commit`` or ``fetch``
+        by starting ``git maintenance run --auto``, which detaches by default (``maintenance.autoDetach``),
+        keeps working in the repository after the command returns, and holds ``objects/maintenance.lock``
+        while it runs. A seal check that lists ``.git`` during that window reports the lock as an
+        unexpected entry.
         """
         kept = GIT_PLATFORM_VARIABLES | {name.upper() for name in inherit}
         child = cls.git_child_env({name: value for name, value in source.items() if name.upper() in kept})
-        child["GIT_CONFIG_COUNT"] = "2"
+        child["GIT_CONFIG_COUNT"] = "3"
         child["GIT_CONFIG_KEY_0"] = "core.excludesFile"  # no global ignore file decides what `add` stages
         child["GIT_CONFIG_VALUE_0"] = os.devnull
         child["GIT_CONFIG_KEY_1"] = "core.attributesFile"  # no global attributes file changes a diff or a checkout
         child["GIT_CONFIG_VALUE_1"] = os.devnull
+        child["GIT_CONFIG_KEY_2"] = "maintenance.auto"  # no background maintenance outlives a command
+        child["GIT_CONFIG_VALUE_2"] = "false"
         return child
 
     @staticmethod

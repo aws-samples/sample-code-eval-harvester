@@ -119,6 +119,33 @@ class TestIsolatedChildEnvironment:
         assert git("check-attr", "diff", "code.py") == "code.py: diff: unspecified\n"
         assert "remote." not in git("config", "--list")  # nor did ~/.gitconfig add a remote
 
+    def test_a_commit_starts_no_background_maintenance(self, tmp_path: Path) -> None:
+        # Git ends a commit by starting `git maintenance run --auto`, detached by default, which keeps
+        # writing into .git (objects/maintenance.lock) after the commit returns. GIT_TRACE shows it.
+        env = {
+            **GitCommandRunner.isolated_git_env(os.environ, inherit=("PATH",)),
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+        (tmp_path / "code.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+
+        def git(*args: str, trace: bool = False) -> str:
+            completed = subprocess.run(  # nosec B607 - literal argv[0], real binary via executable=; B603 skipped in pyproject
+                ["git", "-C", str(tmp_path), *args],
+                executable=GIT_EXECUTABLE,
+                capture_output=True,
+                text=True,
+                env={**env, "GIT_TRACE": "1"} if trace else env,
+                check=True,
+            )
+            return completed.stderr
+
+        git("init", "--quiet")
+        git("add", "code.py")
+        assert "maintenance run" not in git("commit", "--quiet", "--message", "init", trace=True)
+
 
 class TestExecutableResolution:
     """git resolution prefers os.defpath but falls back to the real PATH (Windows: os.defpath misses)."""
