@@ -16,7 +16,9 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess  # nosec B404 - runs the emitted solve.sh to prove its inlined payload survives the shell
 import sys
@@ -33,6 +35,7 @@ from eval_harvest.candidate import Candidate, CandidateDict, FindingDict
 from eval_harvest.cli import Cli, ExitCode
 from eval_harvest.emit import REWARD_KEYS, Emit, EmitRefusalError, EmitResult, HookResult, UnresolvedCheck, VerifyFailure
 from eval_harvest.forge import Forge
+from eval_harvest.gitcmd import GIT_PLATFORM_VARIABLES
 from eval_harvest.riskmap import RiskMap
 from eval_harvest.seal import Seal
 from eval_harvest.tomlw import emit_document
@@ -375,14 +378,38 @@ def _submission_from_oracle(task_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _solve_script_env(shell: str, tmp_path: Path, findings_path: Path) -> dict[str, str]:
+    """The env `solve.sh` runs under: its `python3` is this test's interpreter, its other tools the shell's own.
+
+    The script runs in the Linux task container, where `python3`, `mkdir` and `dirname` are on PATH. On the
+    test host a `python3` shim that execs `sys.executable` stands in for the container's, so the script runs
+    the same interpreter on every OS (a Windows host has no `python3`). The tool directories are the shell's
+    own and, for Git for Windows' `bin/sh.exe`, its sibling `usr/bin`. The platform variables
+    (`SYSTEMROOT` above all) are kept, since Windows cannot start a process from an `env=` without them.
+    """
+    shim_dir = tmp_path / "solve-shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "python3"
+    shim.write_text(f'#!/bin/sh\nexec {shlex.quote(Path(sys.executable).as_posix())} "$@"\n', encoding="utf-8", newline="\n")
+    shim.chmod(0o755)
+    shell_bin = Path(shell).parent
+    git_usr_bin = shell_bin.parent / "usr" / "bin"  # Git for Windows: bin/sh.exe's tools live in usr/bin
+    tool_dirs = [shim_dir, shell_bin, *([git_usr_bin] if git_usr_bin.is_dir() else []), Path("/usr/bin"), Path("/bin")]
+    env = {name: value for name, value in os.environ.items() if name.upper() in GIT_PLATFORM_VARIABLES}
+    env["PATH"] = os.pathsep.join(str(directory) for directory in tool_dirs)
+    env["EVAL_HARVEST_AGENT_FINDINGS"] = findings_path.as_posix()
+    return env
+
+
 def _run_solve_script(task_dir: Path, tmp_path: Path) -> list[dict[str, Any]]:
-    """Run the emitted `solve.sh` and return the submission it wrote — the real shell-safety test."""
+    """Run the emitted `solve.sh` under a POSIX `sh` and return the submission it wrote — the real shell-safety test."""
     findings_path = tmp_path / "agent-run" / "findings.json"
+    shell = shutil.which("sh") or "/bin/sh"  # Git for Windows puts its sh on the Windows runner's PATH
     completed = subprocess.run(  # nosec B603 - runs the sh script this test just emitted, with a fixed argv
-        ["/bin/sh", str(task_dir / "solution" / "solve.sh")],
+        [shell, (task_dir / "solution" / "solve.sh").as_posix()],
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "EVAL_HARVEST_AGENT_FINDINGS": str(findings_path)},
+        env=_solve_script_env(shell, tmp_path, findings_path),
         check=False,
     )
     assert completed.returncode == 0, f"solve.sh exited {completed.returncode}: {completed.stderr}"
@@ -515,7 +542,9 @@ def test_agent_findings_path_reaches_the_separate_verifier(tmp_path: Path) -> No
     transferred = "/logs/artifacts/findings.json"
     unreachable = "/logs/agent/findings.json"  # written by the agent, never seen by the verifier
 
-    score_default = str(_load_score_module()._DEFAULT_AGENT_FINDINGS)
+    # score.py's default is a container path, opened by the Linux verifier: compare its POSIX form, since
+    # str() renders a Path with the host's separator (`\\logs\\artifacts\\...` on Windows).
+    score_default = _load_score_module()._DEFAULT_AGENT_FINDINGS.as_posix()
     solve_default = _solve_sh_findings_default((task / "solution" / "solve.sh").read_text(encoding="utf-8"))
     instruction = (task / "instruction.md").read_text(encoding="utf-8")
 
@@ -638,12 +667,20 @@ def test_emit_does_not_claim_all_checks_passed_when_unresolved(capsys: pytest.Ca
 
 
 def test_emit_names_each_unresolved_check_and_reason(capsys: pytest.CaptureFixture[str]) -> None:
-    """Every unresolved check appears with its reason and a runnable `next:` command — not a bare count."""
-    Cli._report_emit(_emit_result_with_unresolved(), json_mode=False)
+    """Every unresolved check appears with its reason and a runnable `next:` command — not a bare count.
+
+    The report prints the task path in the host's native form, as the line naming the written datapoint
+    and the ``--json`` ``task`` field do, so the expected path is the same ``Path`` rendered on this OS:
+    on Windows the command reads ``verify tasks\\our-org__...``, which is what that shell runs.
+    """
+    result = _emit_result_with_unresolved()
+    Cli._report_emit(result, json_mode=False)
     out = capsys.readouterr().out
+    task = str(Path("tasks", "our-org__our-repo__pr1234-reject"))
     assert "base-and-patch" in out and "no clone provided" in out
     assert "git-channel-absence" in out and "no container runtime" in out
-    assert "next: eval-harvest verify tasks/our-org__our-repo__pr1234-reject" in out
+    assert f"{task} written" in out
+    assert f"next: eval-harvest verify {task}\n" in out  # the very path written, nothing appended
 
 
 def test_emit_reports_all_passed_when_nothing_unresolved(capsys: pytest.CaptureFixture[str]) -> None:

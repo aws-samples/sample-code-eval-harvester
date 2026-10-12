@@ -8,6 +8,8 @@ subcommand table, the FR-2 four-field refusal shape, and the per-class exit code
 from __future__ import annotations
 
 import argparse
+import codecs
+import io
 import json
 import re
 import sys
@@ -257,9 +259,25 @@ class Cli:
     @classmethod
     def run(cls, argv: Sequence[str]) -> int:
         """Parse argv, dispatch to the named verb, and return its exit code."""
+        cls.encode_output_as_utf8()
         parser, _ = cls.build_parser_with_verbs()
         arguments = parser.parse_args(argv)
         return cls.dispatch(arguments)
+
+    @staticmethod
+    def encode_output_as_utf8() -> None:
+        """Encode stdout and stderr as UTF-8, whatever code page the host would choose for them.
+
+        The help prose and the reports print characters such as ``→`` and ``⇒``, and a PR title or a
+        review body can hold any character at all. Python encodes a redirected stream with the locale's
+        code page, which on Windows is a legacy one such as cp1252 that cannot encode them, so a verb
+        piped to an agent or a file died with ``UnicodeEncodeError`` before printing its answer. UTF-8
+        encodes every character and gives a pipe the same bytes on every OS (FR-4). A stream that is
+        already UTF-8 (a POSIX locale, the Windows console) or is not a text file is left as it is.
+        """
+        for stream in (sys.stdout, sys.stderr):
+            if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":
+                stream.reconfigure(encoding="utf-8", errors=stream.errors)
 
     @classmethod
     def build_parser(cls) -> argparse.ArgumentParser:

@@ -67,6 +67,20 @@ class TestHumanParitySubprocess:
             check=False,
         )
 
+    def test_help_prints_under_a_legacy_code_page(self) -> None:
+        """Every verb's help prints whole, as UTF-8, when the child's streams would use a legacy code page.
+
+        Emulates the Windows default for a piped stream (``PYTHONIOENCODING=cp1252`` gives a POSIX child
+        the same stream encoding), where help text with a character outside the code page, such as
+        ``emit``'s ``⇒``, raised ``UnicodeEncodeError`` and exited 1 with no help printed.
+        """
+        for verb in VERBS_WITH_TOP:
+            run = self._run(_help_argv(verb), extra_env={"PYTHONIOENCODING": "cp1252"})
+            assert run.returncode == 0, f"{verb or 'top-level'} --help exited {run.returncode}: {run.stderr!r}"
+            assert run.stdout.decode("utf-8").startswith("usage: eval-harvest"), f"{verb or 'top-level'} printed no help"
+        emit_help = self._run(_help_argv("emit"), extra_env={"PYTHONIOENCODING": "cp1252"}).stdout.decode("utf-8")
+        assert "(reject⇒first" in emit_help and "approve⇒last)" in emit_help
+
     def test_human_parity_identical_bytes(self) -> None:
         for verb in VERBS_WITH_TOP:
             argv = _help_argv(verb)
