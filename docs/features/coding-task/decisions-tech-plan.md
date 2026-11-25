@@ -3,6 +3,21 @@
 A running log of the technical decisions behind this feature, newest first. Where a decision reverses
 an earlier one, it says so.
 
+## 2026-11-25 — found on the AgentCore + Harbor workshop path
+
+**The answer-absence scan reads the gold patch's added lines, not the patch file.** The scan mines answer
+fragments line by line from `solution/`. For a unified diff that is the wrong unit:
+- an added line keeps its `+`, so `+def mul(a, b):` never matched an instruction that said `def mul(a, b):`;
+- a context line is the base's own text, so a pull request that edits `.gitignore` (pallets/itsdangerous
+  #369) was refused because the Dockerfile shared its `__pycache__/` line.
+
+`code` now passes the added lines as the scan's explicit tokens and leaves the patch out of the scanned
+copy. The Dockerfile no longer writes `.git/info/exclude`; the repository's own `.gitignore` covers it.
+
+**Calibration matches trials by Harbor's `result.json`.** Harbor cuts a trial folder's name to 32
+characters, so `pallets__itsdangerous__pr378-code` (33) had no trial named after it. The trial's
+`task_name`, then its `config.json` task path, identify it.
+
 ## 2026-11-25 — first design
 
 **Shared verifier mode, for this kind only (reverses FR-32 for coding tasks).** The review kind's

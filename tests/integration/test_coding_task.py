@@ -113,6 +113,22 @@ class TestCodingTask:
         assert isinstance(result, CodingRefusal)
         assert result.check == check
 
+    def test_base_text_in_the_gold_patch_context_is_not_a_leak(self, fixture: CodingRepoFixture) -> None:
+        # Seen on a real repository: a PR that edits .gitignore has "__pycache__/" as a context line, and the
+        # Dockerfile once held the same text. Context lines are the base's own text, which the agent has anyway.
+        result = _harvest(fixture, 10)
+        assert isinstance(result, CodingTaskResult), result
+        assert " __pycache__/" in (result.task_dir / "solution" / "gold.patch").read_text()
+
+    def test_a_line_the_change_adds_is_a_leak_where_the_agent_can_read_it(self, fixture: CodingRepoFixture) -> None:
+        task_dir = _task(fixture)
+        assert CodingTaskHarvester.answer_leak(task_dir) is None
+        with (task_dir / "instruction.md").open("a") as instruction:
+            instruction.write("Hint: def mul(a, b):\n")
+        leak = CodingTaskHarvester.answer_leak(task_dir)
+        assert leak is not None
+        assert leak.check == "answer-absent:def mul(a, b):"
+
     def test_a_squash_merge_title_drops_the_pr_number(self, fixture: CodingRepoFixture) -> None:
         commit = CodingTaskHarvester.find_integration_commit(fixture.clone, 9)
         assert commit is not None
