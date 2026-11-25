@@ -510,7 +510,8 @@ build.
   produces the evidence for that decision, not the CI integration that acts on it.
 - Non-GitHub forges. (GitLab was later brought into scope as its own feature: `../gitlab-forge/prd.md`.)
 - Eval types other than PR review. The CLI is "agent-native for creating evals" in ambition;
-  v1 does one kind.
+  v1 does one kind. (Coding tasks were later brought into scope as their own feature:
+  `../coding-task/prd.md`.)
 - Pooling history across repositories.
 
 **Cut:**

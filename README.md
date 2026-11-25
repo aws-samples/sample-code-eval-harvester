@@ -130,6 +130,39 @@ uv run eval-harvest dataset --dataset ./my-dataset
 This workflow assumes trusted candidate inputs — read the [Security](#security) section and
 [`SECURITY.md`](SECURITY.md) before processing any input.
 
+### Make coding tasks
+
+The same clone also yields **coding tasks**: an agent makes a merged pull request's change, and the
+tests that pull request added or changed grade it. They run on the AgentCore + Harbor workshop path
+and are graded in its stages (`tests/test.sh --stage untrusted`, then `--stage trusted`), so no file
+the agent can write becomes its score. Describe how the repository's tests run once, in
+`coding-profile.toml` in the dataset directory ([`man/eval-harvest-code.md`](man/eval-harvest-code.md),
+PROFILE):
+
+```toml
+[coding]
+image = "public.ecr.aws/docker/library/python:3.12-bookworm"
+install = "pip install --no-cache-dir -e . pytest"
+command = "python -m pytest -p no:cacheprovider -o junit_family=xunit1 --junitxml={junit} {files}"
+display_command = "python -m pytest {files}"
+run = ["tests/**/test_*.py"]
+```
+
+```sh
+# 1. one task per merged pull request (offline: the clone and the profile only)
+uv run eval-harvest code --pr 42 --clone ./work/repo --dataset ./my-dataset
+
+# 2. calibrate it with Harbor's nop and oracle agents, on the workshop's AgentCore environment
+T=./my-dataset/tasks/acme__repo__pr42-code
+harbor run -p "$T" -e harbor_env.agentcore_env:AgentCoreEnvironment -a nop    -o jobs --job-name nop
+harbor run -p "$T" -e harbor_env.agentcore_env:AgentCoreEnvironment -a oracle -o jobs --job-name oracle
+uv run eval-harvest calibrate "$T" --nop jobs/nop --oracle jobs/oracle
+
+# 3. run nop and oracle again (they must score 0 and 1), then the agents you are comparing
+```
+
+The design is in [`docs/features/coding-task/`](docs/features/coding-task/).
+
 ### Run the eval (optional)
 
 `mise run eval` runs the core-bet eval: does an unsupervised agent build good datapoints from the
@@ -144,10 +177,11 @@ a network, and the running environment; without those it skips cleanly (exit 0).
 | Path | What it is |
 | --- | --- |
 | [`man/`](man/) | Man pages for every verb — the same methodology prose the `--help` vends, pinned in sync by a test. |
-| `src/eval_harvest/` | The CLI package — zero runtime deps. `cli.py` dispatches the six verbs; `survey`/`forge`/`candidate` mine PRs; `rubric`/`riskmap` build artefacts; `emit`/`harbor`/`tomlw`/`verifier_tpl/` assemble the task; `seal`/`verify` enforce answer-absence; `dataset` aggregates the manifest. |
+| `src/eval_harvest/` | The CLI package — zero runtime deps. `cli.py` dispatches the six verbs; `survey`/`forge`/`candidate` mine PRs; `rubric`/`riskmap` build artefacts; `emit`/`harbor`/`tomlw`/`verifier_tpl/` assemble the task; `seal`/`verify` enforce answer-absence; `dataset` aggregates the manifest; `codetask`/`calibrate`/`coding_tpl/` build coding tasks. |
 | [`eval/`](eval/README.md) | The core-bet **eval harness** (Workstream G): runs a real agent against the finished CLI, scores datapoint quality with an aligned LLM judge, and reports pass rates + the go/no-go. Nothing in `src/` imports it. |
 | `harvest_env/` | The packaged [`harvest-env` provider](harvest_env/README.md), one Lambda MicroVM per trial, driven by `microvms==1.0.0` and loaded into unmodified `harbor==0.22.0` by import path. Supports public-network tasks; rejects network-isolation requirements. |
 | [`docs/features/pr-eval-harvest/`](docs/features/pr-eval-harvest/) | The design: [`prd.md`](docs/features/pr-eval-harvest/prd.md) (scope), [`tech-plan.md`](docs/features/pr-eval-harvest/tech-plan.md) (design), the `decisions-*.md` logs (why), and [`tasks/`](docs/features/pr-eval-harvest/tasks/) (the board). |
+| [`docs/features/coding-task/`](docs/features/coding-task/) | Coding tasks from merged pull requests, graded in the AgentCore + Harbor workshop's stages: `code`, `calibrate`, `codetask`/`codeprofile`/`calibrate` and `coding_tpl/`. |
 
 For contributor setup, coding standards, and the spec-driven agent-burndown workflow this repo is
 built and extended with, see [`CONTRIBUTING.md`](CONTRIBUTING.md) and
