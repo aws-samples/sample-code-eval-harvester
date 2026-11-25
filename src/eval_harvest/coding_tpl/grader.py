@@ -255,9 +255,17 @@ class RunnerCommand:
         try:
             return process.wait(timeout=timeout_sec), False
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(OSError):
-                os.killpg(process.pid, signal.SIGKILL)
+            RunnerCommand.kill_process_group(process)
             return process.wait(), True
+
+    @staticmethod
+    def kill_process_group(process: subprocess.Popen[bytes]) -> None:
+        """Kill the test command and everything it started (its own session); the process alone where there are no groups."""
+        if sys.platform == "win32":  # the task images are Linux; this keeps the template importable and type-checked on Windows
+            process.kill()
+            return
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
 
 
 @dataclass(frozen=True)
