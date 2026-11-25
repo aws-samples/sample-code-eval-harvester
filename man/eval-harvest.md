@@ -10,7 +10,8 @@
 eval-harvest [--json] <verb> [args]
 ```
 
-Verbs: `init`, `survey`, `capture`, `brief`, `show`, `annotate`, `emit`, `verify`, `dataset`. Run
+Verbs: `init`, `survey`, `capture`, `brief`, `show`, `annotate`, `emit`, `verify`, `dataset`, and for
+coding tasks `code` and `calibrate`. Run
 `eval-harvest <verb> --help` for each verb's own methodology and flags.
 
 ## DESCRIPTION
@@ -60,6 +61,12 @@ You build the **rubric** and the **risk map** before any datapoint. The workflow
 5. `emit <candidate> --kind reject|approve` builds and verifies each datapoint.
 6. `dataset` assembles the manifest and reports the risk distribution.
 
+Coding tasks are the second kind: the agent makes a merged pull request's change and the tests the
+pull request added or changed grade it, in stages (`tests/test.sh --stage untrusted|trusted`, as the
+AgentCore + Harbor workshop runs it). `code --pr <n>` writes the task from the clone and the dataset's
+`coding-profile.toml`; Harbor's nop and oracle agents run it once; `calibrate` turns those runs into
+the fail-to-pass and pass-to-pass tests.
+
 ## EXIT STATUS
 
 `0` success · `2` usage error · `3` refusal (input cannot become a datapoint) · `4` verification
@@ -69,4 +76,4 @@ failure (a datapoint is broken) · `5` runtime unavailable (a check could not ru
 
 `eval-harvest-init(1)`, `eval-harvest-survey(1)`, `eval-harvest-capture(1)`,
 `eval-harvest-brief(1)`, `eval-harvest-show(1)`, `eval-harvest-annotate(1)`, `eval-harvest-emit(1)`,
-`eval-harvest-verify(1)`, `eval-harvest-dataset(1)`.
+`eval-harvest-verify(1)`, `eval-harvest-dataset(1)`, `eval-harvest-code(1)`, `eval-harvest-calibrate(1)`.

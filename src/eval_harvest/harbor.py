@@ -265,6 +265,38 @@ class Harbor:
         violations += cls._check_reward_strategy(document.get("multi_step_reward_strategy"))
         return violations
 
+    @classmethod
+    def validate_coding_task_config(cls, document: Mapping[str, TomlValue]) -> list[SchemaViolation]:
+        """Every way a coding task's ``task.toml`` fails Harbor's schema (coding-task tech plan §3).
+
+        The same checks as :meth:`validate_task_config` except the verifier mode. A review task is
+        graded in a separate verifier because a shared one is agent-scoreable (FR-32). A coding task
+        must be graded against the agent's own tree, so it runs in the agent's container (Harbor's
+        shared mode, no ``environment_mode``) and in stages: ``tests/test.sh --stage untrusted`` as
+        the agent user, then ``--stage trusted`` as another user, whose ``reward.json`` alone counts.
+        ``code`` checks the staged ``test.sh``; this checks that the mode stays shared.
+        """
+        violations: list[SchemaViolation] = []
+        violations += cls._check_top_level_keys(document)
+        violations += cls._check_task_section(document.get("task"))
+        violations += cls._check_coding_verifier_section(document.get("verifier"))
+        violations += cls._check_environment_section(document.get("environment"), "environment")
+        return violations
+
+    @classmethod
+    def _check_coding_verifier_section(cls, value: TomlValue | None) -> list[SchemaViolation]:
+        section = cls._as_table(value)
+        if section is None or "environment_mode" not in section:
+            return []
+        return [
+            SchemaViolation(
+                "compile.schema-invalid",
+                "verifier.environment_mode",
+                "a coding task is graded in stages in the agent's container (Harbor's shared mode); a separate "
+                "verifier has no agent tree to grade, so environment_mode must be left out",
+            )
+        ]
+
     @staticmethod
     def _check_top_level_keys(document: Mapping[str, TomlValue]) -> list[SchemaViolation]:
         """Flag any top-level key Harbor would silently drop, and the deprecated ``version`` alias."""
