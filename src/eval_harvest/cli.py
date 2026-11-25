@@ -21,7 +21,10 @@ from typing import Any  # a --from-json payload is arbitrary JSON; list[dict[str
 from eval_harvest.annotate import Annotate, AnnotateParseError, AnnotateStats
 from eval_harvest.batch import Batch, BatchReport, ItemResult
 from eval_harvest.brief import Brief
+from eval_harvest.calibrate import CalibrationResult, CodingTaskCalibration
 from eval_harvest.candidate import Candidate, CandidateDict, CommentDict, Emittability, Violation
+from eval_harvest.codeprofile import PROFILE_FILENAME, CodingProfileReader
+from eval_harvest.codetask import CodingRefusal, CodingTaskHarvester, CodingTaskResult
 from eval_harvest.dataset import Dataset, DatasetRefusalError
 from eval_harvest.emit import Emit, EmitRefusalError, EmitResult
 from eval_harvest.forge import Forge, ForgeError, PullRequestFacts
@@ -51,6 +54,8 @@ VERB_SUMMARIES: dict[str, str] = {
     "emit": "Turn a filled candidate into a self-contained, verified Harbor task directory.",
     "verify": "Check a datapoint is sound and its answer is absent from everywhere the agent can read.",
     "dataset": "Assemble the Harbor manifest and report the risk and severity distribution.",
+    "code": "Turn one merged pull request into a coding task that its own tests grade, in stages.",
+    "calibrate": "Find a coding task's fail-to-pass tests from Harbor's nop and oracle runs of it.",
 }
 
 #: The methodology each verb's --help must teach (argparse ``epilog``). Prose, not flags: FR-1's
@@ -203,6 +208,28 @@ VERB_METHODOLOGY: dict[str, str] = {
         "  there. `dataset` reports counts per change-risk level and per finding-severity level so you\n"
         "  can see whether the low-risk slice is large enough to justify turning automation on."
     ),
+    "code": (
+        "Methodology:\n"
+        "  A coding task asks an agent to make a merged pull request's change, from the repository at the\n"
+        "  merge's parent commit, and grades it with the tests the pull request added or changed. The input\n"
+        "  is the local clone and the dataset's coding-profile.toml (the image, the install command, the\n"
+        "  test command with {files} and {junit}, the run globs); `code` calls no forge. The instruction is\n"
+        "  the PR title and the hidden test files, never the PR body, which describes the fix.\n"
+        "  Grading is staged, as the AgentCore + Harbor workshop runs it: `tests/test.sh --stage untrusted`\n"
+        "  runs the tests as the agent user, then `--stage trusted` computes the reward as another user from\n"
+        "  the task's own files and the test report, so no file the agent can write becomes the score.\n"
+        "  Next, run Harbor's nop and oracle agents on the task and `calibrate` it."
+    ),
+    "calibrate": (
+        "Methodology:\n"
+        "  Which hidden tests the change makes pass is found by running them, not guessed. Run Harbor's nop\n"
+        "  agent (the base) and its oracle agent (the gold patch) on the task: before calibration its grader\n"
+        "  records every test's status and gives no reward. `calibrate` reads those trials. A test is\n"
+        "  fail-to-pass if it passed in no nop run and in every oracle run, pass-to-pass if it passed in\n"
+        "  every run, and left out if its result changed between runs of one agent (flaky). It writes\n"
+        "  tests/expected.json and lists the fail-to-pass tests in instruction.md. Then run nop and oracle\n"
+        "  again: nop must score 0 and oracle 1 before any agent is benchmarked on the task."
+    ),
 }
 
 #: The top-level ``eval-harvest --help`` methodology (argparse ``epilog``).
@@ -218,6 +245,8 @@ TOP_LEVEL_METHODOLOGY: str = (
     "  `survey` finds harvestable PRs; `capture` fetches one PR's facts; you fill the candidate; `emit`\n"
     "  builds and verifies each datapoint; `dataset` reports the distribution. Run `eval-harvest <verb>\n"
     "  --help` for each verb's methodology.\n"
+    "  Coding tasks are the second kind: `code` turns a merged PR into a task its own tests grade, in\n"
+    "  stages, and `calibrate` finds which of those tests the change makes pass.\n"
     "\n"
     "Sample input restriction (S2):\n"
     "  Use trusted, locally captured candidates and edit only judgment slots. Do not import candidate\n"
@@ -254,7 +283,19 @@ class Cli:
 
     #: The verb subcommands, in help-listing order. Each gets its handler from its own module
     #: in a later task; A-1 only opens the slots and the dispatcher (Out Of Scope).
-    VERBS: tuple[str, ...] = ("init", "survey", "capture", "brief", "show", "annotate", "emit", "verify", "dataset")
+    VERBS: tuple[str, ...] = (
+        "init",
+        "survey",
+        "capture",
+        "brief",
+        "show",
+        "annotate",
+        "emit",
+        "verify",
+        "dataset",
+        "code",
+        "calibrate",
+    )
 
     @classmethod
     def run(cls, argv: Sequence[str]) -> int:
@@ -314,6 +355,8 @@ class Cli:
         cls.add_emit_arguments(verb_parsers["emit"])
         cls.add_verify_arguments(verb_parsers["verify"])
         cls.add_dataset_arguments(verb_parsers["dataset"])
+        cls.add_code_arguments(verb_parsers["code"])
+        cls.add_calibrate_arguments(verb_parsers["calibrate"])
         return parser, verb_parsers
 
     @staticmethod
@@ -627,6 +670,53 @@ class Cli:
         )
 
     @staticmethod
+    def add_code_arguments(code_parser: argparse.ArgumentParser) -> None:
+        """Register ``code --pr <n> [--clone <dir>] [--dataset <dir>] [--profile <file>]`` (coding-task tech plan §4).
+
+        Offline: reads the clone's commits and the profile, writes ``tasks/<owner>__<name>__pr<n>-code/``.
+        """
+        code_parser.add_argument(
+            "--pr", type=int, required=True, metavar="<n>", help="the merged pull request to turn into a task"
+        )
+        code_parser.add_argument(
+            "--clone", type=Path, default=Path(), metavar="<dir>", help="the local clone (default: the current directory)"
+        )
+        code_parser.add_argument(
+            "--dataset",
+            type=Path,
+            default=Path(),
+            metavar="<dir>",
+            help="where tasks/ is written and the profile is read (default: .)",
+        )
+        code_parser.add_argument(
+            "--profile",
+            type=Path,
+            default=None,
+            metavar="<file>",
+            help=f"the coding profile (default: <dataset>/{PROFILE_FILENAME})",
+        )
+        code_parser.add_argument(
+            "--merge-commit",
+            default=None,
+            metavar="<sha>",
+            help="the PR's merge or squash commit, when its subject does not name the PR",
+        )
+        code_parser.add_argument(
+            "--repo", default=None, metavar="<owner/name>", help="the repository's name, when the clone has no forge remote"
+        )
+
+    @staticmethod
+    def add_calibrate_arguments(calibrate_parser: argparse.ArgumentParser) -> None:
+        """Register ``calibrate <task-dir> --nop <job-dir> --oracle <job-dir>`` (coding-task tech plan §5). Reads files only."""
+        calibrate_parser.add_argument("task_dir", type=Path, metavar="<task-dir>", help="the coding task directory `code` wrote")
+        calibrate_parser.add_argument(
+            "--nop", type=Path, required=True, metavar="<job-dir>", help="Harbor's job directory of the nop run(s)"
+        )
+        calibrate_parser.add_argument(
+            "--oracle", type=Path, required=True, metavar="<job-dir>", help="Harbor's job directory of the oracle run(s)"
+        )
+
+    @staticmethod
     def add_verb_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser], verb: str) -> argparse.ArgumentParser:
         """Register one verb's subparser carrying its summary and methodology (FR-1).
 
@@ -673,6 +763,10 @@ class Cli:
             return cls.handle_verify(arguments)
         if arguments.verb == "dataset":
             return cls.handle_dataset(arguments)
+        if arguments.verb == "code":
+            return cls.handle_code(arguments)
+        if arguments.verb == "calibrate":
+            return cls.handle_calibrate(arguments)
         # Every verb is wired now; an unrecognized one still fails loudly (a usage error) rather than
         # silently exiting 0 and doing nothing.
         print(f"eval-harvest: '{arguments.verb}' is not implemented yet", file=sys.stderr)
@@ -1724,6 +1818,90 @@ class Cli:
         else:
             print(report.render_human(), end="")
         return ExitCode.SUCCESS
+
+    @classmethod
+    def handle_code(cls, arguments: argparse.Namespace) -> int:
+        """Write one coding task from a merged PR (coding-task tech plan §4): offline, no forge call (NFR-2)."""
+        json_mode: bool = arguments.json
+        dataset: Path = arguments.dataset
+        profile_path: Path = arguments.profile or dataset / PROFILE_FILENAME
+        datapoint = f"PR {arguments.pr}"
+        profile, problems = CodingProfileReader.read_profile(profile_path)
+        if profile is None:
+            offending = "; ".join(f"{problem.key}: {problem.detail}" for problem in problems)
+            next_step = f"write {profile_path} with a [coding] table (see `man eval-harvest-code`, PROFILE)"
+            return cls.refuse(
+                "coding-profile-invalid", datapoint, offending, next_step, exit_code=ExitCode.USAGE, json_mode=json_mode
+            )
+        result = CodingTaskHarvester.harvest_coding_task(
+            arguments.clone, arguments.pr, profile, dataset, merge_commit=arguments.merge_commit, repository=arguments.repo
+        )
+        if isinstance(result, CodingRefusal):
+            return cls.refuse(
+                result.check, datapoint, result.offending, result.next_, exit_code=ExitCode.REFUSAL, json_mode=json_mode
+            )
+        cls._report_code(result, json_mode=json_mode)
+        return ExitCode.SUCCESS
+
+    @staticmethod
+    def _report_code(result: CodingTaskResult, *, json_mode: bool) -> None:
+        """Print the written task and the next commands: nop and oracle runs, then calibrate."""
+        if json_mode:
+            payload = {
+                "ok": True,
+                "task_dir": str(result.task_dir),
+                "base_commit": result.change.base_commit,
+                "merge_commit": result.change.merge_commit,
+                "run_files": list(result.split.run_files),
+                "hidden_test_files": len(result.split.hidden_test_files),
+                "source_files": len(result.split.source_paths),
+            }
+            print(json.dumps(payload))
+            return
+        split = result.split
+        print(f"wrote {result.task_dir}")
+        print(
+            f"  {len(split.source_paths)} source file(s) in the gold patch, {len(split.hidden_test_files)} hidden test file(s), "
+            f"{len(split.run_files)} run"
+        )
+        print(
+            "next: run Harbor's nop and oracle agents on it, then `eval-harvest calibrate "
+            f"{result.task_dir} --nop <nop job dir> --oracle <oracle job dir>`"
+        )
+
+    @classmethod
+    def handle_calibrate(cls, arguments: argparse.Namespace) -> int:
+        """Write a coding task's expected.json from its nop and oracle trials (coding-task tech plan §5). Reads files only."""
+        json_mode: bool = arguments.json
+        task_dir: Path = arguments.task_dir
+        result = CodingTaskCalibration.calibrate(task_dir, arguments.nop, arguments.oracle)
+        if isinstance(result, CodingRefusal):
+            return cls.refuse(
+                result.check, task_dir.name, result.offending, result.next_, exit_code=ExitCode.REFUSAL, json_mode=json_mode
+            )
+        cls._report_calibrate(result, json_mode=json_mode)
+        return ExitCode.SUCCESS
+
+    @staticmethod
+    def _report_calibrate(result: CalibrationResult, *, json_mode: bool) -> None:
+        """Print how many tests each class got, and from how many trials."""
+        if json_mode:
+            payload = {
+                "ok": True,
+                "task_dir": str(result.task_dir),
+                "fail_to_pass": list(result.fail_to_pass),
+                "pass_to_pass": list(result.pass_to_pass),
+                "left_out": list(result.left_out),
+                "nop_trials": result.nop_trials,
+                "oracle_trials": result.oracle_trials,
+            }
+            print(json.dumps(payload))
+            return
+        print(
+            f"calibrated {result.task_dir}: {len(result.fail_to_pass)} fail-to-pass, {len(result.pass_to_pass)} pass-to-pass, "
+            f"{len(result.left_out)} left out as flaky (from {result.nop_trials} nop and {result.oracle_trials} oracle trial(s))"
+        )
+        print("next: run nop and oracle again; nop must score 0 and oracle 1")
 
     @staticmethod
     def _forge_remote_or_report(clone: Path, arguments: argparse.Namespace, *, verb: str) -> ForgeRemote | None:

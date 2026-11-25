@@ -72,6 +72,11 @@ METHODOLOGY_PHRASES: dict[str | None, tuple[str, ...]] = {
     # telling it apart from a genuine leak needs a `--clone`.
     "verify": ("must be absent", "control token", "scan-did-not-run", "predates the change"),
     "dataset": ("risk distribution", "low-risk", "automat"),
+    # `code` teaches its one input besides the clone, that the PR body is never used, and the staged
+    # grading contract that keeps the agent's files out of the score.
+    "code": ("coding-profile.toml", "never the pr body", "--stage untrusted", "--stage trusted", "calibrate"),
+    # `calibrate` teaches that fail-to-pass is found by running, the flaky rule, and the nop/oracle gate after it.
+    "calibrate": ("nop", "oracle", "fail-to-pass", "flaky", "expected.json", "nop must score 0"),
 }
 
 MAN_DIR = Path(__file__).resolve().parents[2] / "man"

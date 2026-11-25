@@ -30,7 +30,18 @@ AGENT_ENV: dict[str, str] = {
 #: Runs the installed CLI in a child process with real argv, the way a user or an agent would.
 _CHILD_PROGRAM = "import sys; from eval_harvest.cli import Cli; sys.exit(Cli.run(sys.argv[1:]))"
 
-VERBS_WITH_TOP: tuple[str | None, ...] = (None, "init", "survey", "capture", "annotate", "emit", "verify", "dataset")
+VERBS_WITH_TOP: tuple[str | None, ...] = (
+    None,
+    "init",
+    "survey",
+    "capture",
+    "annotate",
+    "emit",
+    "verify",
+    "dataset",
+    "code",
+    "calibrate",
+)
 
 
 def _help_argv(verb: str | None) -> list[str]:

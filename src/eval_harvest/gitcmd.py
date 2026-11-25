@@ -178,6 +178,24 @@ class GitCommandRunner:
         return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
     @classmethod
+    def git_bytes(cls, repo: Path, *args: str) -> tuple[int, bytes]:
+        """Run git in ``repo``; return ``(returncode, stdout bytes)`` unstripped and undecoded.
+
+        For the reads whose output is content, not text: a blob, an archive, a binary diff. The same
+        discipline as :meth:`git_with_stderr` (literal argv[0], the resolved binary via ``executable=``,
+        the isolated child env, no shell); only the decoding differs.
+        """
+        completed = subprocess.run(  # nosec B607 - literal argv[0], real binary via executable=; B603 skipped in pyproject
+            ["git", "-C", str(repo), "--no-pager", *args],
+            executable=GIT_EXECUTABLE,
+            capture_output=True,
+            env=cls.git_child_env(os.environ),
+            shell=False,
+            check=False,
+        )
+        return completed.returncode, completed.stdout
+
+    @classmethod
     def gh(cls, argv_tail: list[str], *, repo: str | None = None) -> tuple[int, str, str]:
         """Run gh with ``GITHUB_TOKEN`` stripped; return ``(returncode, stripped stdout, stripped stderr)``.
 
