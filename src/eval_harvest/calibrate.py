@@ -16,6 +16,7 @@ a flaky required test would make the task unsolvable at random. ``calibrate`` re
 from __future__ import annotations
 
 import json
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final  # Any: results.json is arbitrary JSON until narrowed to a status table below.
@@ -46,8 +47,9 @@ class CodingTaskCalibration:
         """Write ``tests/expected.json`` and list the fail-to-pass tests in ``instruction.md``, or say why not."""
         if not (task_dir / "tests" / "grader.py").is_file():
             return CodingRefusal("not-a-coding-task", str(task_dir), "pass a task directory that eval-harvest code wrote")
-        nop = cls.trial_statuses(nop_jobs, task_dir.name)
-        oracle = cls.trial_statuses(oracle_jobs, task_dir.name)
+        task_id = cls.task_id(task_dir)
+        nop = cls.trial_statuses(nop_jobs, task_dir, task_id)
+        oracle = cls.trial_statuses(oracle_jobs, task_dir, task_id)
         if not nop or not oracle:
             missing = "nop" if not nop else "oracle"
             return CodingRefusal(
@@ -67,16 +69,51 @@ class CodingTaskCalibration:
         cls.list_tests_in_instruction(task_dir / "instruction.md", fail_to_pass)
         return CalibrationResult(task_dir, fail_to_pass, pass_to_pass, left_out, len(nop), len(oracle))
 
+    @staticmethod
+    def task_id(task_dir: Path) -> str:
+        """The task's Harbor id (``[task] name`` in task.toml), or empty when it has none."""
+        try:
+            document: Any = tomllib.loads((task_dir / "task.toml").read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return ""
+        task = document.get("task") if isinstance(document, dict) else None
+        return str(task.get("name") or "") if isinstance(task, dict) else ""
+
     @classmethod
-    def trial_statuses(cls, jobs_dir: Path, task_name: str) -> list[dict[str, str]]:
-        """The status table of every trial of ``task_name`` under ``jobs_dir`` (Harbor names a trial ``<task>__<id>``)."""
+    def trial_statuses(cls, jobs_dir: Path, task_dir: Path, task_id: str) -> list[dict[str, str]]:
+        """The status table of every trial of the task under ``jobs_dir``."""
         tables: list[dict[str, str]] = []
         for results in sorted(jobs_dir.rglob("verifier/results.json")):
-            if results.parent.parent.name.startswith(f"{task_name}__"):
+            if cls.trial_is_of_task(results.parent.parent, task_dir, task_id):
                 table = cls.status_table(results)
                 if table:
                     tables.append(table)
         return tables
+
+    @classmethod
+    def trial_is_of_task(cls, trial_dir: Path, task_dir: Path, task_id: str) -> bool:
+        """True when Harbor's own files say the trial ran this task.
+
+        Harbor cuts a trial folder's name to the first 32 characters of the task's, so a long task name
+        (``pallets__itsdangerous__pr378-cod__A6nFS8d``) does not identify it. Its ``result.json`` names
+        the task by id and its ``config.json`` by path; the folder name is the last resort.
+        """
+        result = cls.read_json_object(trial_dir / "result.json")
+        if task_id and result.get("task_name") == task_id:
+            return True
+        task = cls.read_json_object(trial_dir / "config.json").get("task")
+        if isinstance(task, dict) and Path(str(task.get("path") or "")).name == task_dir.name:
+            return True
+        return trial_dir.name.startswith(f"{task_dir.name}__")
+
+    @staticmethod
+    def read_json_object(path: Path) -> dict[str, Any]:
+        """A JSON object from ``path``, or empty when it is missing or not an object."""
+        try:
+            raw: Any = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return raw if isinstance(raw, dict) else {}
 
     @staticmethod
     def status_table(path: Path) -> dict[str, str]:
