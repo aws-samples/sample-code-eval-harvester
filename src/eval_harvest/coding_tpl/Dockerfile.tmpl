@@ -13,7 +13,6 @@ COPY repo.tar.gz /tmp/eval-harvest-repo.tar.gz
 RUN tar -xzf /tmp/eval-harvest-repo.tar.gz -C /work/repo --no-same-owner && rm /tmp/eval-harvest-repo.tar.gz
 {install_lines}# A fresh repository with one commit, the base, tagged harvest-base: no history to read the change from.
 RUN git init -q \
- && printf 'node_modules/\n.venv/\n__pycache__/\n' >> .git/info/exclude \
  && git config user.name eval-harvest && git config user.email eval-harvest@localhost \
  && git add -A \
  && GIT_AUTHOR_DATE=2000-01-01T00:00:00Z GIT_COMMITTER_DATE=2000-01-01T00:00:00Z \

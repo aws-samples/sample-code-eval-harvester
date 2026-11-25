@@ -71,12 +71,13 @@ class CodingRepoBuilder:
 
     @classmethod
     def build_merged_pull_request(cls, root: Path) -> CodingRepoFixture:
-        """``main`` with: the base; PR #7 (source and tests, merged); PR #8 (docs only); PR #9 (squashed)."""
+        """``main`` with: the base; PR #7 (merged); PR #8 (docs only); PR #9 (squashed); PR #10 (with .gitignore)."""
         clone = root / "clone"
         clone.mkdir(parents=True)
         cls.git(clone, "init", "--quiet", "--initial-branch=main")
         cls.git(clone, "remote", "add", "origin", "https://github.com/acme/calc.git")
-        cls.write(clone, {"calc.py": BASE_CALC, "run_tests.py": RUNNER, "tests/test_calc.py": BASE_TEST, "README.md": "calc\n"})
+        base_files = {"calc.py": BASE_CALC, "run_tests.py": RUNNER, "tests/test_calc.py": BASE_TEST, "README.md": "calc\n"}
+        cls.write(clone, {**base_files, ".gitignore": "__pycache__/\n"})
         base = cls.commit(clone, "base", "2026-01-01T00:00:00")
         cls.merge_branch(clone, "acme/mul", {"calc.py": GOLD_CALC, "tests/test_calc.py": HIDDEN_TEST}, PR_NUMBER, PR_TITLE)
         merge = cls.head(clone)
@@ -86,6 +87,13 @@ class CodingRepoBuilder:
         cls.git(clone, "checkout", "--quiet", "main")
         cls.git(clone, "merge", "--quiet", "--squash", "acme/tests-only")
         cls.commit(clone, "Test add again (#9)", "2026-01-04T00:00:00")
+        # PR #10 also adds ignore patterns that a Dockerfile could contain: they are the answer, not a leak.
+        sub = {
+            "calc.py": GOLD_CALC + "\n\ndef sub(a, b):\n    return a - b\n",
+            ".gitignore": "__pycache__/\nnode_modules/\n.venv/\n",
+            "tests/test_calc.py": HIDDEN_TEST + "\n\ndef test_sub():\n    assert calc.sub(3, 2) == 1\n",
+        }
+        cls.merge_branch(clone, "acme/sub", sub, 10, "Add subtraction")
         dataset = root / "dataset"
         dataset.mkdir()
         (dataset / "coding-profile.toml").write_text(PROFILE, encoding="utf-8")

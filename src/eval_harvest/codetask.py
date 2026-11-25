@@ -43,6 +43,9 @@ _CONTROL_FILENAME: Final = ".eval-harvest-scan-control"
 CALIBRATION_BEGIN: Final = "<!-- eval-harvest calibrate: begin -->"
 CALIBRATION_END: Final = "<!-- eval-harvest calibrate: end -->"
 _GIT_PATH_CHUNK: Final = 200
+#: The shortest added line of the gold patch worth treating as an answer fragment: the answer-absence
+#: scan's own minimum, long enough that boilerplate (a brace, `return x`) does not manufacture leaks.
+_MIN_ANSWER_FRAGMENT_LEN: Final = 12
 _AGENT_TIMEOUT_SEC: Final = 3600.0
 
 
@@ -396,13 +399,34 @@ class CodingTaskHarvester:
                 path.chmod(0o755)
 
     @staticmethod
-    def answer_leak(task_dir: Path) -> CodingRefusal | None:
-        """Refuse when the gold patch shows up in what the agent can read (FR-40), with the control token planted first."""
+    def added_lines(patch: bytes) -> list[str]:
+        """The lines the gold patch adds, without the diff's ``+``: what the agent must write, so what must not be shown.
+
+        Not its context or removed lines: those are the base commit's own text, which the agent has anyway.
+        """
+        lines = {
+            raw[1:].strip()
+            for raw in patch.decode("utf-8", "replace").splitlines()
+            if raw.startswith("+") and not raw.startswith("+++")
+        }
+        return sorted(line for line in lines if len(line) >= _MIN_ANSWER_FRAGMENT_LEN)
+
+    @classmethod
+    def answer_leak(cls, task_dir: Path) -> CodingRefusal | None:
+        """Refuse when the change shows up in what the agent can read (FR-40), with the control token planted first.
+
+        The scan mines answer fragments from ``solution/`` line by line. For a unified diff that is the wrong
+        unit: an added line keeps its ``+`` (so the fix itself would never match), and a context line is base
+        text (so a Dockerfile that shares a line with the base would). So the gold patch's added lines are
+        passed as the explicit answer tokens, and the patch itself is left out of the scanned copy.
+        """
+        tokens = cls.added_lines((task_dir / "solution" / "gold.patch").read_bytes())
         with tempfile.TemporaryDirectory() as scratch:
             corpus = Path(scratch) / "task"
             shutil.copytree(task_dir, corpus)
+            (corpus / "solution" / "gold.patch").unlink()
             (corpus / _CONTROL_FILENAME).write_text(f"{_CONTROL_TOKEN}\n", encoding="utf-8")
-            report = Seal.scan_agent_visible(corpus, tokens=[], control_token=_CONTROL_TOKEN)
+            report = Seal.scan_agent_visible(corpus, tokens=tokens, control_token=_CONTROL_TOKEN)
         failures = report.failures
         if not failures:
             return None
